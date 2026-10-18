@@ -104,19 +104,28 @@ I couldn't find a published link that opens the NASCAR MOBILE app, so you need o
 - **Either phone, if it works:** find an https link that opens the app. In the NASCAR app use Share on a screen
   (leaderboard, Fan Rewards), paste the link into Notes, tap it: if it opens the app (not Safari/Chrome), use it as `APP_URL`.
 - **Android** (ntfy's buttons can open links but can't launch an app by package name, `com.nascar.nascarmobile`).
-  Try these in order:
-  1. **App link.** Settings -> Apps -> NASCAR MOBILE -> Open by default: if it lists `www.nascar.com`, some nascar.com
-     links open the app. Use Share inside the app, paste the link into Notes/Messages, tap it. If it opens the app,
-     set that link as `APP_URL`.
-  2. **Custom link scheme (via adb).** With the phone connected to a PC:
-     `adb shell dumpsys package com.nascar.nascarmobile | grep -i -B3 -A8 scheme`
-     A scheme such as `nascar` -> try `APP_URL=nascar://`. Test with `--test`.
-  3. **Always works: automation app.** Set `APP_INTENT=com.nascarcheckin.OPEN_APP`. The button then sends an Android
-     broadcast instead of opening a link. In **MacroDroid** (free tier is enough): new macro -> trigger *Intent Received*
-     -> action name `com.nascarcheckin.OPEN_APP` -> action *Launch Application* -> NASCAR MOBILE. Grant MacroDroid
-     "Display over other apps" and exempt it from battery optimisation, or Android blocks the launch. In **Tasker**
-     use an *Intent Received* event with the same action name and the *Launch App* action.
-     (ntfy -> Settings must have broadcasts enabled; they are by default.)
+  The method that works is a **MacroDroid** macro on the phone, triggered by a broadcast the button sends:
+  1. In `.env` set `APP_INTENT=com.nascarcheckin.OPEN_APP` (optionally `APP_LABEL`), then
+     `docker compose up -d --force-recreate`. `com.nascarcheckin.OPEN_APP` is only a label for the signal; nothing
+     happens on the phone until a macro listens for that exact name.
+  2. Install **ntfy** (subscribe to your topic) and **MacroDroid** (free tier is enough). Set the battery setting of
+     both to **Unrestricted**, and allow MacroDroid **Display over other apps**. If it asks to enable its accessibility
+     service for the Back action, allow it.
+  3. Create the macro:
+     - **Trigger:** Device Events -> *Intent Received* -> action name `com.nascarcheckin.OPEN_APP`
+       (exactly this text, case-sensitive; it must match `APP_INTENT`)
+     - **Action 1:** Applications -> *Launch Application* -> NASCAR MOBILE
+     - **Action 2:** the *Press Back Button* action. Android leaves the notification drawer open behind an app
+       launched this way; this closes it. No wait between the two actions was needed.
+  4. Test: run the macro's test button, then `docker exec nascar-checkin python app.py --test` and tap **Open NASCAR app**.
+  - *Troubleshooting:* notification doesn't clear and MacroDroid's log is empty -> the tap isn't reaching ntfy (check
+    ntfy's battery/notification settings; try the button inside the ntfy app). Macro triggers but the app doesn't
+    open -> allow *Display over other apps*. Tasker works the same way (an *Intent Received* event with the same name).
+  - *New phone:* the macro lives on the phone, so redo steps 2-3 from this list. You can also export the macro from
+    MacroDroid (macro menu -> Export/Share) and keep the file somewhere safe to import later.
+  - *Alternatives (untested, only if you'd rather not use MacroDroid):* an https link that opens the app (Settings ->
+    Apps -> NASCAR MOBILE -> Open by default; use Share in the app and tap the link from Notes), or a custom link scheme
+    found with `adb shell dumpsys package com.nascar.nascarmobile | grep -i -B3 -A8 scheme`. Put it in `APP_URL`.
 
 ## 1. Docker icon in Unraid
 The compose file sets the label `net.unraid.docker.icon`. Replace `YOUR-UNRAID-IP` with your server's LAN IP
