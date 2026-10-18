@@ -1,0 +1,5 @@
+[
+  {"id": "cup-roval",   "series": "Cup",     "name": "Bank of America Roval 400", "start": "2026-10-11T19:00:00-04:00"},
+  {"id": "xfinity-ex1", "series": "Xfinity", "name": "Example Xfinity race",      "start": "2026-10-10T15:00:00-04:00"},
+  {"id": "truck-ex1",   "series": "Truck",   "name": "Example Truck race",        "start": "2026-10-09T20:00:00-04:00"}
+]

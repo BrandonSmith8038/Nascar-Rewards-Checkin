@@ -1,0 +1,39 @@
+{
+  "Actions": [
+    {
+      "Icon": "images/api_action",
+      "Name": "API Request (Multi Match)",
+      "States": [
+        {
+          "Image": "images/api_key"
+        }
+      ],
+      "Tooltip": "Polls a URL and shows a different image for each matching value",
+      "UUID": "com.nascarcheckin.sd-api-request-multi"
+    }
+  ],
+  "SDKVersion": 2,
+  "Author": "mjbnz (original); modified for multi-match",
+  "CodePath": "index.html",
+  "PropertyInspectorPath": "propertyinspector/index.html",
+  "Description": "API Request plugin with multiple match rules (first match wins)",
+  "Name": "API Request Multi",
+  "Icon": "images/api_action",
+  "Category": "API Request Multi",
+  "CategoryIcon": "images/api_action",
+  "URL": "https://github.com/mjbnz/sd-api-request/",
+  "Version": "0.3.0",
+  "OS": [
+    {
+      "Platform": "mac",
+      "MinimumVersion": "10.11"
+    },
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Software": {
+    "MinimumVersion": "4.1"
+  }
+}

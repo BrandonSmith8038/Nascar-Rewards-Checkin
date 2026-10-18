@@ -1,0 +1,15 @@
+# All personal settings live in a file named ".env" next to this file (copy .env.example to .env).
+# .env is git-ignored, so `git pull` never touches it and this file is identical on GitHub and on the server.
+services:
+  nascar-checkin:
+    build: .
+    container_name: nascar-checkin
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${HTTP_PORT:-8099}:${HTTP_PORT:-8099}"    # LAN only - do NOT forward this port on your router
+    volumes:
+      - /mnt/user/appdata/nascar-checkin:/data     # saved schedule + state; keep this OUTSIDE the git clone
+    labels:
+      # Icon shown in the Unraid Docker tab (Unraid downloads it from this URL; set ICON_URL in .env)
+      net.unraid.docker.icon: "${ICON_URL:-}"

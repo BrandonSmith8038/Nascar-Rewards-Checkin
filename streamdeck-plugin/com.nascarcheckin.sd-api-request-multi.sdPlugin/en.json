@@ -1,0 +1,9 @@
+{
+  "Description": "API Request plugin with multiple match rules (first match wins)",
+  "Name": "API Request Multi",
+  "com.nascarcheckin.sd-api-request-multi": {
+    "Name": "API Request (Multi Match)",
+    "Tooltip": "Polls a URL and shows a different image for each matching value"
+  },
+  "Localization": {}
+}

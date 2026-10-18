@@ -1,0 +1,158 @@
+<!DOCTYPE HTML>
+<html>
+
+<head>
+    <title>com.nascarcheckin.sd-api-request-multi PI</title>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="../common/css/sdpi.css">
+    <link rel="stylesheet" href="../common/css/local.css">
+    <style>.rule { border-top: 1px solid #555; margin-top: 6px; padding-top: 2px; }</style>
+</head>
+
+<body>
+    <div class="sdpi-wrapper hidden">
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">URL</div>
+            <input class="sdpi-item-value" type="text" id="request_url" required>
+        </div>
+
+        <div class="sdpi-heading">Request Parameters</div>
+
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">HTTP Method</div>
+            <select class="sdpi-item-value select" id="request_method">
+                <option value="GET" selected>GET</option>
+                <option value="POST">POST</option>
+                <option value="HEAD">HEAD</option>
+                <option value="PUT">PUT</option>
+                <option value="PATCH">PATCH</option>
+                <option value="DELETE">DELETE</option>
+            </select>
+        </div>
+
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">Content Type</div>
+            <select class="sdpi-item-value select" id="request_content_type">
+                <option value="" selected>&lt;none&gt;</option>
+                <option value="application/json">application/json</option>
+                <option value="application/xml">application/xml</option>
+                <option value="text/plain">text/plain</option>
+                <option value="text/html">text/html</option>
+            </select>
+        </div>
+
+        <div type="textarea" class="sdpi-item alignTop">
+            <div class="sdpi-item-label">Request Headers</div>
+            <span class="sdpi-item-value textarea">
+                <textarea type="textarea" class="autosize" oninput="autoGrow(this)" id="request_headers" placeholder="Authorization: Bearer [token]"></textarea>
+            </span>
+        </div>
+
+        <div type="textarea" class="sdpi-item alignTop">
+            <div class="sdpi-item-label">Request Body</div>
+            <span class="sdpi-item-value textarea">
+                <textarea type="textarea" class="autosize" oninput="autoGrow(this)" id="request_body"></textarea>
+            </span>
+        </div>
+
+        <div class="sdpi-heading">Advanced Settings</div>
+
+        <div class="sdpi-item">
+            <div class="sdpi-item-value">
+                <div class="sdpi-item-child">
+                    <input id="enable_success_indicator" type="checkbox">
+                    <label for="enable_success_indicator" class="sdpi-item-label"><span></span>Enable green success indicator</label>
+                </div>
+            </div>
+        </div>
+        <div class="sdpi-item">
+            <div class="sdpi-item-value">
+                <div class="sdpi-item-child">
+                    <input id="response_parse" type="checkbox">
+                    <label for="response_parse" class="sdpi-item-label"><span></span>Set button image based on response</label>
+                </div>
+            </div>
+        </div>
+        <div id="response_parse_settings" style="display:none">
+            <details>
+                <summary>Expand for Response parsing instructions</summary>
+                <p>Enter the JSON path of the field to look at (for example <code>state</code>). The rules below are checked from top to bottom, and the first rule whose value matches decides which image the key shows.</p>
+                <p>Matching ignores upper/lower case. <code>a, b</code> as a value means "a or b". A blank value matches when the field is true or non-empty.</p>
+                <p>Leave the JSON path blank to search the whole response body for each rule's value instead.</p>
+                <p>The default image is shown when no rule matches, and when the status URL cannot be reached.</p>
+            </details>
+            <div class="sdpi-item">
+                <div class="sdpi-item-label">JSON Path</div>
+                <input class="sdpi-item-value" type="text" id="response_parse_field">
+            </div>
+            <div class="sdpi-heading">Rules (first match wins)</div>
+            <div id="rules_container"></div>
+            <div class="sdpi-item">
+                <div class="sdpi-item-label empty"></div>
+                <div class="sdpi-item-value"><button type="button" id="add_rule_btn">+ Add rule</button></div>
+            </div>
+            <div class="sdpi-item">
+                <div class="sdpi-item-label empty"></div>
+                <div class="sdpi-item-value"><button type="button" id="add_nascar_btn">Add NASCAR track-state rules</button></div>
+            </div>
+            <div class="sdpi-item">
+                <div class="sdpi-item-label">Default image</div>
+                <div class="sdpi-item-group file" id="defaultfilepickergroup">
+                    <input class="sdpi-item-value" type="file" id="image_default" accept=".jpg, .jpeg, .png, .ico, .gif, .bmp, .tiff">
+                    <label class="sdpi-file-info " for="image_default">No file...</label>
+                    <label class="sdpi-file-label" for="image_default">Choose file...</label>
+                </div>
+            </div>
+            <div class="sdpi-item">
+                <div class="sdpi-item-value">
+                    <div class="sdpi-item-child">
+                        <input id="poll_status"  type="checkbox">
+                        <label for="poll_status" class="sdpi-item-label"><span></span>Periodically poll a URL for status</label>
+                    </div>
+                </div>
+            </div>
+            <div id="poll_status_settings" style="display:none">
+                <div class="sdpi-item">
+                    <div class="sdpi-item-label">Status URL</div>
+                    <input class="sdpi-item-value" type="text" id="poll_status_url">
+                </div>
+                <div class="sdpi-item">
+                    <div class="sdpi-item-label">HTTP Method</div>
+                    <select class="sdpi-item-value select" id="poll_status_method">
+                        <option value="GET" selected>GET</option>
+                        <option value="POST">POST</option>
+                        <option value="HEAD">HEAD</option>
+                        <option value="PUT">PUT</option>
+                        <option value="PATCH">PATCH</option>
+                        <option value="DELETE">DELETE</option>
+                    </select>
+                </div>        
+                <div class="sdpi-item">
+                    <div class="sdpi-item-label">Poll Frequency</div>
+                    <input class="sdpi-item-value max10" type="text" id="poll_status_frequency" pattern="\d+" value="15"> seconds
+                </div>
+                <div class="sdpi-item">
+                    <div class="sdpi-item-value">
+                        <div class="sdpi-item-child">
+                            <input id="poll_status_parse" type="checkbox">
+                            <label for="poll_status_parse" class="sdpi-item-label"><span></span>Parse a different field from status response</label>
+                        </div>
+                    </div>
+                </div>
+                <div id="poll_status_parse_settings" style="display:none">
+                    <div class="sdpi-item">
+                        <div class="sdpi-item-label">JSON Path</div>
+                        <input class="sdpi-item-value" type="text" id="poll_status_parse_field">
+                    </div>
+                </div>        
+            </div>
+        </div>
+    </div>
+
+    <script src="../common/common_pi.js"></script>
+    <script src="../common/common.js"></script>
+    <script src="index_pi.js"></script>
+
+</body>
+
+</html>

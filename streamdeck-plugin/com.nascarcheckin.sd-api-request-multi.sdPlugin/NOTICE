@@ -1,0 +1,8 @@
+API Request Multi
+Derived from "API Request" (sd-api-request) by Mike Beattie (mjbnz),
+https://github.com/mjbnz/sd-api-request/ , licensed under the Apache License 2.0 (see LICENCE).
+
+Changes from the original: the single "expected value" with matched/unmatched images was replaced by an
+ordered list of match rules (first match wins) plus a default image; added a shared matching module
+(rules.js); poll failures show the default image; the key press refreshes status when no request URL is set;
+the plugin UUID, name and manifest were changed so it installs alongside the original.

@@ -1,0 +1,33 @@
+# --- Secrets / personal config: never commit real values ---------------------------
+# Keep your real topic, IPs and tokens in a local copy that git ignores.
+.env
+.env.*
+!.env.example
+docker-compose.local.yml
+docker-compose.override.yml
+
+# --- Runtime data (lives in the /data volume on the server) ------------------------
+data/
+state.json
+schedule_cache.json
+feed_cache.json
+icon_test.json
+races.json
+
+# --- Python ------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- Build outputs (attach these to a GitHub Release instead) ----------------------
+dist/
+*.zip
+*.streamDeckPlugin
+
+# --- OS / editor / logs ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log

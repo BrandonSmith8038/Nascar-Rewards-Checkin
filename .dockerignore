@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+.env.*
+data/
+streamdeck/
+streamdeck-plugin/
+__pycache__/
+*.py[cod]
+*.md
+*.zip
+*.streamDeckPlugin
