@@ -20,6 +20,7 @@ Usage:
   python app.py --polling  show whether quiet hours currently block polling
   python app.py --icon-test [secs]  cycle /status through green/yellow/red/hot/offline (default 20 s each)
   python app.py --preview  send the weekend preview now (--preview-print just shows it)
+  python app.py --daily [day]  send the daily dashboard reminder now (--daily-print just shows it)
   python app.py --test     send a test notification
 """
 import json
@@ -108,6 +109,16 @@ try:
     PREVIEW_TIME = tuple(int(x) for x in os.environ.get("PREVIEW_TIME", "18:00").split(":"))[:2]
 except ValueError:
     PREVIEW_TIME = (18, 0)
+
+# Daily "earn dashboard points" reminder, with an optional game name per weekday (GAME_MON ... GAME_SUN)
+DAILY = env_int("DAILY_REMINDER", 1)
+DAILY_ONLY_CONFIGURED = env_int("DAILY_ONLY_CONFIGURED", 0)   # 1 = only send on days that have a game set
+try:
+    DAILY_TIME = tuple(int(x) for x in os.environ.get("DAILY_REMINDER_TIME", "22:00").split(":"))[:2]
+except ValueError:
+    DAILY_TIME = (22, 0)
+DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "").strip() or CHECKIN_URL
+DAILY_GAMES = {d: os.environ.get(f"GAME_{d.upper()}", "").strip() for d in _DAYS}
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 HTTP_PORT = env_int("HTTP_PORT", env_int("ACK_PORT", 8099))   # 0 disables the HTTP server
@@ -517,10 +528,10 @@ def poll_decision(races, state, now):
 
 
 # ---------------------------------------------------------------- alerts ----
-def build_actions(eid=None):
+def build_actions(eid=None, url=None, plain_label="Open leaderboard"):
     """Notification buttons (ntfy allows at most 3): website, NASCAR app (optional), Checked in (optional)."""
-    actions = [{"action": "view", "label": WEB_LABEL if (APP_URL or APP_INTENT) else "Open leaderboard",
-                "url": CHECKIN_URL, "clear": True}]
+    actions = [{"action": "view", "label": WEB_LABEL if (APP_URL or APP_INTENT) else plain_label,
+                "url": url or CHECKIN_URL, "clear": True}]
     if APP_URL:
         actions.append({"action": "view", "label": APP_LABEL, "url": APP_URL, "clear": True})
     elif APP_INTENT:
@@ -762,6 +773,43 @@ def maybe_send_preview(races, state, now):
         log.info("Weekend preview sent (%s)", title)
 
 
+# ----------------------------------------------------------- daily dashboard reminder ----
+def build_daily(day_idx):
+    """(title, body) for weekday index 0=Mon, or None if this day should be skipped."""
+    game = DAILY_GAMES.get(_DAYS[day_idx], "")
+    if not game and DAILY_ONLY_CONFIGURED:
+        return None
+    if game:
+        return (f"Dashboard game today: {game}",
+                f"Don't forget to earn your extra points on the NASCAR Fan Rewards dashboard today. "
+                f"Today's game: {game}.")
+    return ("Dashboard points reminder",
+            "Don't forget to earn your extra points on the NASCAR Fan Rewards dashboard today.")
+
+
+def maybe_send_daily(state, now):
+    if not DAILY:
+        return
+    local = now.astimezone(LOCAL_TZ)
+    if (local.hour, local.minute) < DAILY_TIME:
+        return
+    today = local.date().isoformat()
+    with STATE_LOCK:
+        if state.get("daily_date") == today:
+            return
+    built = build_daily(local.weekday())
+    if built is not None:
+        title, body = built
+        if not ntfy_publish({"title": title, "message": body, "priority": 3, "tags": ["video_game"],
+                             "click": DASHBOARD_URL,
+                             "actions": build_actions(None, DASHBOARD_URL, "Open dashboard")}):
+            return                      # try again on the next tick
+        log.info("Daily reminder sent (%s)", title)
+    with STATE_LOCK:
+        state["daily_date"] = today
+        save_state(state)
+
+
 # ------------------------------------------------------------------ http ----
 class Handler(BaseHTTPRequestHandler):
     state = None
@@ -861,6 +909,7 @@ def run_service():
             schedule_tick(races, state, now)
             process_events(state, now_ts)
             maybe_send_preview(races, state, now)
+            maybe_send_daily(state, now)
             prune(state, now_ts)
         except Exception:
             log.exception("loop failed")
@@ -959,6 +1008,24 @@ def cmd_preview(send):
         print("\nsent" if ok else "\nFAILED (see log)")
 
 
+def cmd_daily(send):
+    """--daily-print [day] shows a day's reminder; --daily [day] also sends it. day = mon..sun (default today)."""
+    flag = "--daily" if send else "--daily-print"
+    i = sys.argv.index(flag)
+    arg = sys.argv[i + 1][:3].lower() if len(sys.argv) > i + 1 else ""
+    idx = _DAYS.index(arg) if arg in _DAYS else datetime.now(LOCAL_TZ).weekday()
+    built = build_daily(idx)
+    if built is None:
+        print(f"No reminder on {_DAYS[idx]} (DAILY_ONLY_CONFIGURED=1 and no game set for that day).")
+        return
+    title, body = built
+    print(f"[{_DAYS[idx]}] {title}\n{body}")
+    if send:
+        ok = ntfy_publish({"title": title, "message": body, "priority": 3, "tags": ["video_game"],
+                           "click": DASHBOARD_URL, "actions": build_actions(None, DASHBOARD_URL, "Open dashboard")})
+        print("\nsent" if ok else "\nFAILED (see log)")
+
+
 def cmd_test():
     ok = ntfy_publish({"title": "NASCAR reminder test", "message": "If you see this, alerts work.",
                        "priority": 3, "tags": ["white_check_mark"], "click": CHECKIN_URL,
@@ -977,6 +1044,10 @@ if __name__ == "__main__":
         cmd_icon_test(secs)
     elif "--polling" in sys.argv:
         cmd_polling()
+    elif "--daily-print" in sys.argv:
+        cmd_daily(False)
+    elif "--daily" in sys.argv:
+        cmd_daily(True)
     elif "--preview-print" in sys.argv:
         cmd_preview(False)
     elif "--preview" in sys.argv:

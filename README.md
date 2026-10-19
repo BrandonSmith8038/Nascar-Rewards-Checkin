@@ -81,6 +81,20 @@ Modes (`ALERT_MODE`): `auto` (default; live first, schedule as safety net), `liv
 - `docker exec nascar-checkin python app.py --polling` shows whether polling is on right now and why.
   `/status` also reports `"polling"`.
 
+## Daily dashboard reminder
+The Fan Rewards dashboard has games that earn extra points on top of the check-in. Once a day (default 22:00 your
+local time, `DAILY_REMINDER_TIME`) you get a notification reminding you to earn them, with a button that opens the
+dashboard (`DASHBOARD_URL`, default the leaderboard link) and your "Open NASCAR app" button if you set one up.
+- **Name the day's game:** in `.env`, uncomment `GAME_MON` ... `GAME_SUN` and fill in the game (for example
+  `GAME_MON=Trivia`). That day's reminder then says "Today's game: Trivia." Days left commented out get the generic reminder.
+  Use plain text; a few games for one day can be written together (`GAME_FRI=Trivia, Pick 'em`).
+- **Only on game days:** `DAILY_ONLY_CONFIGURED=1` skips days with no game set. `DAILY_REMINDER=0` turns it off.
+- **Applying changes:** `.env` is read when the container is created, so after editing run
+  `docker compose up -d --force-recreate`.
+- **Try it:** `docker exec nascar-checkin python app.py --daily-print mon` shows what Monday's reminder will say;
+  `--daily mon` also sends it (leave the day off for today's). It is sent once per day; if the container is down at
+  22:00 it sends when it comes back up, still the same day.
+
 ## Weekend preview (Thursday evening)
 Every Thursday at `PREVIEW_TIME` (18:00 your local time) you get one notification listing the weekend's races
 (series, race name, track, and time in your time zone), under a randomly chosen heading and opening line. There are
@@ -199,6 +213,7 @@ give each race a stable `"id"` so reschedule notices work).
 | APP_URL / APP_INTENT / APP_LABEL / WEB_LABEL | (empty) | optional "Open NASCAR app" button: APP_URL opens a link, APP_INTENT sends an Android broadcast (see above) |
 | PREVIEW / PREVIEW_DAY / PREVIEW_TIME | 1 / thu / 18:00 | weekly race-weekend preview (see above) |
 | EXCLUDE_NAMES | arca | live races whose name contains any of these words are ignored (only series_id 1-3 = Cup/Xfinity/Truck are ever alerted) |
+| DAILY_REMINDER / DAILY_REMINDER_TIME / DAILY_ONLY_CONFIGURED / DASHBOARD_URL / GAME_MON..GAME_SUN | 1 / 22:00 / 0 / (leaderboard) / (empty) | daily dashboard reminder (see above) |
 | FIRST_ALERT_MIN | 10 | schedule mode: minutes after start |
 | NUDGE_MIN / NUDGES | 45 / 1 | follow-up spacing / count |
 | REFRESH_MIN | 60 | schedule re-pull interval (reschedule detection) |
