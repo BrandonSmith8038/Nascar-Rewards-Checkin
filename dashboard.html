@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NASCAR Check-in</title>
+<link rel="icon" href="/icon.png">
+<style>
+  :root {
+    --bg: #0b0f16; --card: #151b24; --card2: #1b222d; --line: #2a323d; --text: #eaf0f7; --muted: #94a0ae;
+    --accent: #58a6ff; --green: #3fb950; --yellow: #e3b341; --red: #ff5d55; --orange: #ff8a3d; --grey: #6e7681; --purple: #a371f7;
+    --cup: #ff5d55; --oreilly: #3fb950; --truck: #f2c94c;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { min-height: 100vh;
+    background:
+      radial-gradient(1100px 520px at 8% -8%, rgba(78, 161, 255, .13), transparent 60%),
+      radial-gradient(900px 480px at 96% 4%, rgba(255, 138, 61, .11), transparent 58%),
+      radial-gradient(900px 600px at 50% 110%, rgba(163, 113, 247, .07), transparent 60%),
+      var(--bg); }
+  button, input, select { font: inherit; color: inherit; }
+
+  /* ---- banner + status bar ---- */
+  .hero-wrap { max-width: 1880px; margin: 18px auto 0; padding: 0 22px; }
+  .hero { position: relative; border-radius: 18px; overflow: hidden; border: 1px solid #3b2b25;
+    box-shadow: 0 14px 50px -14px rgba(255, 110, 50, .45), 0 0 0 1px rgba(255, 255, 255, .04); }
+  .hero img { display: block; width: 100%; height: clamp(150px, 24vw, 400px); object-fit: cover; object-position: 50% 35%; }
+  .hero::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(to bottom, rgba(11, 15, 22, 0) 72%, rgba(11, 15, 22, .5)); }
+  .statusbar { position: sticky; top: 0; z-index: 5; margin-top: 16px; padding: 15px 22px 13px;
+    background: rgba(11, 15, 22, .88); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+  .statusbar::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px;
+    background: linear-gradient(90deg, #f2c94c 0 22%, #ff5d55 22% 48%, #4ea1ff 48% 74%, #ff8a3d 74%); }
+  .statusrow { max-width: 1880px; margin: 0 auto; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px 20px; }
+  .pill { padding: 7px 15px; border-radius: 999px; font-weight: 700; font-size: 14px; border: 1px solid var(--line); background: var(--card); max-width: 100%; }
+  .pill.ok { color: #6ee08a; border-color: #2a7a40; background: linear-gradient(#123320, #0f2a1a); box-shadow: 0 0 18px rgba(63, 185, 80, .25); }
+  .pill.todo { color: #ffd27a; border-color: #8a6420; background: linear-gradient(#33270e, #271e0b); box-shadow: 0 0 18px rgba(227, 179, 65, .22); }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .linkbtn { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; }
+  .linkbtn:hover:not(:disabled) { text-decoration: underline; }
+  .linkbtn:disabled { color: var(--grey); cursor: default; }
+
+  main { max-width: 1880px; margin: 0 auto; padding: 22px; display: grid; gap: 18px;
+    grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); align-items: start; }
+  @media (min-width: 1500px) { #cardRaces, #cardNotes { grid-column: span 2; } }
+  .card { --accent-c: #30363d; position: relative; border: 1px solid var(--line); border-top: 3px solid var(--accent-c);
+    border-radius: 14px; padding: 18px 20px 20px;
+    background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0) 38%), var(--card);
+    box-shadow: 0 10px 30px -18px rgba(0,0,0,.8); }
+  .card.wide { grid-column: 1 / -1; }
+  .card h2 { margin: 0 0 14px; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; font-weight: 700; color: var(--accent-c); }
+  #cardRaces { --accent-c: #ff5d55; } #cardDaily { --accent-c: #ff8a3d; } #cardNotes { --accent-c: #4ea1ff; }
+  #cardTests { --accent-c: #2fd1c5; } #cardSettings { --accent-c: #a371f7; }
+  .empty { color: var(--muted); padding: 6px 0; }
+
+  /* ---- stream deck key ---- */
+  .deck { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+  .tile { width: 120px; height: 120px; border-radius: 22px; display: grid; place-items: center; flex: none; overflow: hidden;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 14px 44px -8px var(--glow, transparent); transition: background .3s, box-shadow .3s; }
+  .tile svg { width: 74px; height: 74px; }
+  .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .deck-info .big { font-size: 28px; font-weight: 800; letter-spacing: .04em; line-height: 1.1; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 16px 0 6px; }
+  .chip { padding: 3px 11px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid var(--line); color: var(--muted); }
+  .chip.active { color: #0b0f16; border-color: transparent; box-shadow: 0 0 14px -2px var(--glow, transparent); }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); gap: 0 26px; margin-top: 12px; }
+  .fact { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; padding: 8px 0; border-bottom: 1px dashed var(--line); }
+  .fact .k { color: var(--muted); white-space: nowrap; }
+  .fact .v { text-align: right; white-space: nowrap; font-weight: 600; }
+  .series { display: inline-flex; gap: 12px; }
+  .series .s { display: inline-flex; align-items: center; font-weight: 600; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--grey); margin-right: 6px; }
+  .dot.on { background: var(--green); box-shadow: 0 0 9px var(--green); }
+  .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px; letter-spacing: .05em; text-transform: uppercase; }
+  .badge.test { background: #3b2a5a; color: #d8bcff; }
+  details.icons { margin-top: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--card2); padding: 0 14px; }
+  details.icons > summary { cursor: pointer; padding: 10px 0; font-weight: 600; color: var(--accent); list-style: none; }
+  details.icons > summary::-webkit-details-marker { display: none; }
+  details.icons[open] { padding-bottom: 12px; }
+  .igrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 12px; }
+  .icell { text-align: center; }
+  .ithumb { width: 72px; height: 72px; margin: 0 auto 6px; border-radius: 14px; overflow: hidden; display: grid; place-items: center;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.1); }
+  .ithumb img { width: 100%; height: 100%; object-fit: cover; }
+  .ithumb svg { width: 44px; height: 44px; }
+  .iname { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+  .ibtns { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+
+  /* ---- lists ---- */
+  .row { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 11px 8px; margin: 0 -8px;
+    border-top: 1px solid var(--line); border-radius: 8px; }
+  .row:first-of-type { border-top-color: transparent; }
+  .row:hover { background: rgba(255,255,255,.03); }
+  .sr { font-size: 12px; font-weight: 800; padding: 3px 9px; border-radius: 7px; color: #0b0f16; min-width: 64px; text-align: center; }
+  .sr.Cup { background: var(--cup); } .sr.Oreilly { background: var(--oreilly); } .sr.Truck { background: var(--truck); }
+  .title { font-weight: 650; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .st { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; margin-left: 8px; }
+  .st.live { color: #5fe07f; text-shadow: 0 0 10px rgba(63,185,80,.7); animation: pulse 1.6s infinite; }
+  .st.started { color: #ffcf6b; } .st.upcoming { color: #79b8ff; } .st.past { color: var(--grey); }
+  @keyframes pulse { 50% { opacity: .4; } }
+  .actions { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+  .btn { background: linear-gradient(#2fb04d, #238636); border: 1px solid #36c25a; color: #fff; border-radius: 8px; padding: 7px 14px; cursor: pointer;
+    font-weight: 700; font-size: 13px; white-space: nowrap; box-shadow: 0 6px 16px -8px rgba(63,185,80,.7); }
+  .btn:hover:not(:disabled) { filter: brightness(1.12); }
+  .btn:disabled { background: var(--card2); border-color: var(--line); color: var(--muted); cursor: default; box-shadow: none; }
+  .btn.done:disabled { color: #6ee08a; border-color: #2a7a40; background: #10281a; }
+  .btn.secondary { background: var(--card2); border-color: #3a4452; color: var(--text); box-shadow: none; }
+  .btn.mini-btn { padding: 4px 10px; font-size: 12px; }
+  .note-miss { color: var(--grey); font-size: 12px; }
+
+  /* ---- notifications ---- */
+  .note { padding: 10px 8px; margin: 0 -8px; border-top: 1px solid var(--line); border-radius: 8px; }
+  .note:first-of-type { border-top-color: transparent; }
+  .note:hover { background: rgba(255,255,255,.03); }
+  .note .head { display: flex; justify-content: space-between; gap: 10px; }
+  .note .msg { color: var(--muted); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-line; }
+  .fail { color: var(--red); font-weight: 700; font-size: 12px; }
+
+  /* ---- settings ---- */
+  details.group { border: 1px solid var(--line); border-left: 3px solid var(--purple); border-radius: 10px; margin: 10px 0; background: var(--card2); }
+  details.group > summary { cursor: pointer; padding: 11px 14px; font-weight: 700; list-style: none; display: flex; justify-content: space-between; }
+  details.group > summary::-webkit-details-marker { display: none; }
+  details.group > summary::after { content: "+"; color: var(--purple); font-weight: 800; }
+  details.group[open] > summary::after { content: "–"; }
+  .fields { padding: 4px 14px 14px; display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .field label.lbl { display: block; font-weight: 650; font-size: 13px; margin-bottom: 4px; }
+  .field .help { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .field .tag { font-size: 10px; padding: 1px 6px; border-radius: 5px; background: #3a2e12; color: var(--yellow); margin-left: 6px; text-transform: uppercase; letter-spacing: .05em; }
+  .field .err { color: var(--red); font-size: 12px; margin-top: 3px; }
+  .inp { width: 100%; background: #0b0f16; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .inp:focus { outline: 2px solid #1f6feb; border-color: transparent; }
+  .inp:disabled { opacity: .55; }
+  .secret { display: flex; gap: 6px; }
+  .multi { display: flex; flex-wrap: wrap; gap: 6px; }
+  .multi label { display: flex; align-items: center; gap: 5px; padding: 4px 9px; border: 1px solid var(--line); border-radius: 8px; background: #0b0f16; cursor: pointer; font-size: 13px; }
+  .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+  .switch input { width: 18px; height: 18px; accent-color: var(--green); }
+  .savebar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+  .banner { border: 1px solid #1f4a7a; background: #0e1b2b; color: #9cc8f5; padding: 10px 14px; border-radius: 10px; margin-bottom: 8px; font-size: 14px; }
+  .dirty { color: var(--yellow); font-size: 13px; }
+
+  /* ---- tests ---- */
+  .tests-top { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 14px; }
+  .tgrid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+  .test { border: 1px solid var(--line); border-left: 3px solid #2fd1c5; border-radius: 10px; background: var(--card2); padding: 13px 15px; }
+  .test.sends { border-left-color: var(--orange); }
+  .test .thead { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .test .tname { font-weight: 700; }
+  .test .tdesc { color: var(--muted); font-size: 13px; margin: 4px 0 10px; }
+  .tag2 { font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 5px; letter-spacing: .06em; text-transform: uppercase; margin-left: 8px; }
+  .tag2.send { background: #3a2412; color: #ffae6b; } .tag2.read { background: #0f2b2a; color: #5fe3d8; } .tag2.net { background: #162338; color: #8fc3ff; }
+  .tout { margin: 10px 0 0; padding: 10px 12px; background: #0b0f16; border: 1px solid var(--line); border-radius: 8px; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
+  .tout.good { border-color: #2a7a40; } .tout.bad { border-color: #9a3a36; }
+  .tmeta { font-size: 12px; margin-top: 6px; }
+
+  /* ---- overlays ---- */
+  .overlay { position: fixed; inset: 0; background: rgba(1,4,9,.82); display: grid; place-items: center; z-index: 20; padding: 20px; }
+  .overlay[hidden] { display: none; }
+  .modal { background: var(--card); border: 1px solid var(--line); border-top: 3px solid var(--accent); border-radius: 14px; padding: 24px; width: min(380px, 100%); }
+  .modal h3 { margin: 0 0 12px; }
+  .modal .inp { margin: 6px 0 10px; }
+  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: #1f6feb; color: #fff;
+    padding: 10px 18px; border-radius: 10px; font-weight: 700; z-index: 30; opacity: 0; pointer-events: none; transition: opacity .25s; max-width: 90vw; }
+  #toast.show { opacity: 1; }
+  #toast.bad { background: #b62324; }
+  @media (max-width: 520px) { main { padding: 12px; grid-template-columns: 1fr; } .statusbar { padding: 12px 12px 10px; }
+    .hero-wrap { padding: 0 12px; } .facts { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="hero-wrap" id="heroWrap"><div class="hero"><img src="/banner.jpg" alt="NASCAR Rewards check-in reminder"
+  onerror="document.getElementById('heroWrap').hidden=true"></div></div>
+<div class="statusbar">
+  <div class="statusrow">
+    <div id="summary" class="pill">…</div>
+    <div class="small muted"><span id="updated"></span> <button class="linkbtn" id="logoutBtn" hidden>Log out</button></div>
+  </div>
+</div>
+
+<main>
+  <section class="card" id="cardDeck"><h2>Stream Deck key</h2><div id="deckBody" class="empty">Loading…</div><div id="iconMgr"></div></section>
+  <section class="card" id="cardRaces"><h2>This week's races</h2><div id="racesBody" class="empty">Loading…</div></section>
+  <section class="card" id="cardDaily"><h2>Daily dashboard games</h2><div id="dailyBody" class="empty">Loading…</div></section>
+  <section class="card" id="cardNotes"><h2>Last 5 notifications</h2><div id="notesBody" class="empty">Loading…</div></section>
+  <section class="card wide" id="cardTests"><h2>Tests</h2><div id="testsBody" class="empty">Loading…</div></section>
+  <section class="card wide" id="cardSettings"><h2>Settings</h2><div id="settingsBody" class="empty">Loading…</div></section>
+</main>
+
+<div id="toast"></div>
+<div id="loginOverlay" class="overlay" hidden>
+  <div class="modal">
+    <h3>Log in</h3>
+    <div class="muted small">This dashboard is password protected.</div>
+    <input class="inp" id="pw" type="password" placeholder="Password" autocomplete="current-password">
+    <div id="loginErr" class="fail"></div>
+    <button class="btn" id="loginBtn">Log in</button>
+  </div>
+</div>
+<div id="restartOverlay" class="overlay" hidden>
+  <div class="modal"><h3>Settings saved</h3><div id="restartMsg" class="muted">Restarting the app…</div></div>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const SERIES_DISPLAY = { Cup: "Cup", Oreilly: "O'Reilly", Truck: "Truck" };
+const STATE_COLORS = { green: "#3fb950", yellow: "#e3b341", red: "#ff5d55", hot: "#ff8a3d", offline: "#4a505a" };
+let settingsLoaded = false, settingsDirty = false, loggedInLast = null, loginNeeded = false, iconSig = "", iconsOpen = false;
+
+/* ---------- tiny DOM helper (text only, never innerHTML for data) ---------- */
+function h(tag, props, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "disabled" || k === "checked" || k === "hidden" || k === "open") el[k] = !!v;
+    else if (k === "value") el.value = v;
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid === null || kid === undefined || kid === false) continue;
+    el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  }
+  return el;
+}
+function setKids(el, ...kids) {            // replaceChildren that also accepts arrays / nulls
+  el.replaceChildren(...kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false));
+}
+function toast(msg, bad) {
+  const t = $("toast"); t.textContent = msg; t.className = "show" + (bad ? " bad" : "");
+  clearTimeout(toast.t); toast.t = setTimeout(() => (t.className = ""), 3200);
+}
+async function api(path, opts) {
+  const o = Object.assign({ headers: { "X-Requested-With": "nc-dashboard", "Content-Type": "application/json" } }, opts || {});
+  if (o.body && typeof o.body !== "string") o.body = JSON.stringify(o.body);
+  const r = await fetch(path, o);
+  let data = {}; try { data = await r.json(); } catch (e) {}
+  if (r.status === 401) showLogin();
+  return { ok: r.ok, status: r.status, data };
+}
+function ago(ts) {
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + " min ago";
+  if (s < 86400) return Math.floor(s / 3600) + " h ago";
+  return Math.floor(s / 86400) + " d ago";
+}
+function clock(ts) { return new Date(ts * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }); }
+
+/* ---------- login ---------- */
+function showLogin() { loginNeeded = true; $("loginOverlay").hidden = false; setTimeout(() => $("pw").focus(), 50); }
+async function doLogin() {
+  const r = await api("/api/login", { method: "POST", body: { password: $("pw").value } });
+  if (r.ok) { $("pw").value = ""; $("loginErr").textContent = ""; $("loginOverlay").hidden = true; loginNeeded = false;
+    settingsLoaded = false; iconSig = ""; refresh(); }
+  else $("loginErr").textContent = r.data.error || "Login failed.";
+}
+$("loginBtn").addEventListener("click", doLogin);
+$("pw").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
+$("logoutBtn").addEventListener("click", async () => { await api("/api/logout", { method: "POST", body: {} }); settingsLoaded = false; iconSig = ""; refresh(); });
+
+/* ---------- renderers ---------- */
+function flagSvg() {
+  const sq = []; const w = 14, x0 = 18, y0 = 14;
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++)
+    sq.push(`<rect x="${x0 + c * w}" y="${y0 + r * w + (c >= 2 ? 3 : 0)}" width="${w}" height="${w}" fill="${(r + c) % 2 ? "#fafafa" : "#14141a"}"/>`);
+  return `<svg viewBox="0 0 100 100" aria-hidden="true"><rect x="10" y="10" width="5" height="82" rx="2.5" fill="#e8e8e8"/>${sq.join("")}</svg>`;
+}
+function pollText(p) {
+  if (!p) return "—";
+  if (p === "active") return "On (race days)";
+  if (p === "quiet-day") return "Off (quiet day)";
+  if (p === "quiet-night") return "Off (quiet hours)";
+  if (p.startsWith("override")) return "On (" + p.replace(/^override:\s*/, "") + ")";
+  return p;
+}
+function renderSummary(d) {
+  const el = $("summary"), pend = d.summary.pending;
+  if (d.summary.caught_up) { el.className = "pill ok"; el.textContent = "All caught up ✓"; }
+  else { el.className = "pill todo"; el.textContent = pend.length + " to do: " + pend.map((p) => p.label).join(" · "); }
+}
+function fact(label, value) { return h("div", { class: "fact" }, h("span", { class: "k" }, label), h("span", { class: "v" }, value)); }
+function renderDeck(d) {
+  const s = d.status, color = STATE_COLORS[s.state] || STATE_COLORS.offline;
+  $("cardDeck").style.setProperty("--accent-c", color);
+  const custom = d.icons && d.icons[s.state];
+  const tile = h("div", { class: "tile", style: "--glow:" + color + (custom ? "" : ";background:" + color) });
+  if (custom) tile.append(h("img", { src: "/icons/" + s.state + "?v=" + custom, alt: s.state }));
+  else tile.innerHTML = flagSvg();                         // static SVG only, no data in it
+  const series = h("span", { class: "series" }, ["Cup", "Oreilly", "Truck"].map((n) =>
+    h("span", { class: "s" }, h("span", { class: "dot" + (s[n.toLowerCase()] ? " on" : "") }), SERIES_DISPLAY[n])));
+  setKids($("deckBody"),
+    h("div", { class: "deck" }, tile,
+      h("div", { class: "deck-info" },
+        h("div", { class: "big", style: "color:" + color }, s.state.toUpperCase()),
+        h("div", { class: "muted small" }, s.flag != null ? "flag " + s.flag + (s.series ? " · " + s.series : "") : "no race session on the feed"),
+        s.test ? h("div", { style: "margin-top:6px" }, h("span", { class: "badge test" }, "icon test running")) : null)),
+    h("div", { class: "chips" }, d.states.map((n) =>
+      h("span", { class: "chip" + (n === s.state ? " active" : ""),
+        style: n === s.state ? "background:" + STATE_COLORS[n] + ";--glow:" + STATE_COLORS[n] : "" }, n))),
+    h("div", { class: "facts" },
+      fact("Live", s.live ? "yes" : "no"),
+      fact("Series live", series),
+      fact("Polling NASCAR", pollText(s.polling)),
+      fact("Live feed", h("span", { style: "color:" + (s.live_feed_ok ? "var(--green)" : "var(--yellow)") }, s.live_feed_ok ? "OK" : "no recent data")),
+      fact("Alert mode", s.mode),
+      fact("Time zone", d.tz)));
+  renderIconManager(d);
+}
+/* The icon manager is only rebuilt when something changed, so an open file dialog isn't wiped by the 5 s refresh. */
+function renderIconManager(d) {
+  const can = !!d.auth.can_upload, sig = JSON.stringify([d.icons, can]);
+  if (sig === iconSig) return;
+  iconSig = sig;
+  const cells = d.states.map((st) => {
+    const v = d.icons[st];
+    let prev;
+    if (v) prev = h("img", { src: "/icons/" + st + "?v=" + v, alt: st });
+    else { prev = h("div", { style: "width:100%;height:100%;display:grid;place-items:center;background:" + STATE_COLORS[st] }); prev.innerHTML = flagSvg(); }
+    const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp", hidden: true,
+      onchange: (e) => uploadIcon(st, e.target.files[0]) });
+    return h("div", { class: "icell" }, h("div", { class: "ithumb" }, prev), h("div", { class: "iname" }, st),
+      h("div", { class: "ibtns" }, file,
+        h("button", { class: "btn secondary mini-btn", disabled: !can, onclick: () => file.click() }, v ? "Replace" : "Upload"),
+        v ? h("button", { class: "linkbtn small", disabled: !can, onclick: () => resetIcon(st) }, "Reset") : null));
+  });
+  const note = can
+    ? "These change the preview on this page only. Your actual Stream Deck keeps using the images you picked in the plugin, so upload the same files here if you want this page to match."
+    : (d.auth.password_set ? "Log in to change the preview icons." : "Add DASHBOARD_PASSWORD to your .env (and recreate the container) to change the preview icons.");
+  setKids($("iconMgr"), h("details", { class: "icons", open: iconsOpen, ontoggle: (e) => { iconsOpen = e.target.open; } },
+    h("summary", {}, "Change preview icons"), h("div", { class: "small muted", style: "margin:2px 0 10px" }, note), h("div", { class: "igrid" }, cells)));
+}
+async function uploadIcon(state, file) {
+  if (!file) return;
+  if (file.size > 512 * 1024) { toast("That image is over 512 KB.", true); return; }
+  const r = await fetch("/api/icon/" + state, { method: "POST", body: file,
+    headers: { "X-Requested-With": "nc-dashboard", "Content-Type": file.type || "application/octet-stream" } });
+  let data = {}; try { data = await r.json(); } catch (e) {}
+  if (r.status === 401) showLogin();
+  toast(r.ok ? "Icon updated." : (data.error || "Upload failed."), !r.ok);
+  iconSig = ""; refresh();
+}
+async function resetIcon(state) {
+  const r = await api("/api/icon/" + state + "/reset", { method: "POST", body: {} });
+  toast(r.ok ? "Back to the default icon." : (r.data.error || "Couldn't reset."), !r.ok);
+  iconSig = ""; refresh();
+}
+async function setDone(key, done) {
+  const r = await api("/api/done", { method: "POST", body: { key, done } });
+  if (!r.ok) toast(r.data.error || "Couldn't save that.", true);
+  refresh();
+}
+function renderRaces(d) {
+  const box = $("racesBody");
+  if (!d.races.length) {
+    setKids(box, h("div", { class: "empty" }, "No races on the schedule this week."),
+      d.next_up.length ? h("div", { class: "small muted", style: "margin:8px 0 2px" }, "Next up") : null,
+      d.next_up.map((r) => h("div", { class: "row" }, h("span", { class: "sr " + r.series }, r.series_name),
+        h("div", {}, h("div", { class: "title" }, r.name), h("div", { class: "sub" }, [r.track, r.when].filter(Boolean).join(" · "))), h("span"))));
+    return;
+  }
+  const labels = { live: "Live", started: "Started", upcoming: "Upcoming", past: "Earlier" };
+  setKids(box, d.races.map((r) => {
+    const act = r.done
+      ? h("div", { class: "actions" }, h("button", { class: "btn done", disabled: true }, "✓ Checked in"),
+          h("button", { class: "linkbtn small", onclick: () => setDone(r.key, false) }, "undo"))
+      : h("div", { class: "actions" },
+          h("button", { class: "btn", disabled: !r.can_mark, onclick: () => setDone(r.key, true) }, r.can_mark ? "Mark checked in" : "Not started"),
+          r.status === "past" ? h("span", { class: "note-miss" }, "missed?") : null);
+    return h("div", { class: "row" }, h("span", { class: "sr " + r.series }, r.series_name),
+      h("div", {}, h("div", { class: "title" }, r.name, h("span", { class: "st " + r.status }, labels[r.status])),
+        h("div", { class: "sub" }, [r.track, r.when].filter(Boolean).join(" · "))), act);
+  }));
+}
+function renderDaily(d) {
+  const box = $("dailyBody");
+  if (!d.daily.length) {
+    setKids(box, h("div", { class: "empty" },
+      "No daily games set up yet. Add them under Settings → Daily dashboard reminder (Monday game, Tuesday game, …)."));
+    return;
+  }
+  setKids(box, d.daily.map((x) => {
+    const act = x.done
+      ? h("div", { class: "actions" }, h("button", { class: "btn done", disabled: true }, "✓ Done"),
+          x.can_mark ? h("button", { class: "linkbtn small", onclick: () => setDone(x.key, false) }, "undo") : null)
+      : h("div", { class: "actions" }, h("button", { class: "btn", disabled: !x.can_mark, onclick: () => setDone(x.key, true) },
+          x.state === "today" ? "Mark done" : x.state === "past" ? "Missed" : "Not today"));
+    const stText = x.state === "today" ? "Today" : x.state === "upcoming" ? "Coming up" : (x.done ? "Done" : "Missed");
+    return h("div", { class: "row" }, h("span", { class: "sr", style: "background:#ff8a3d" }, x.label.slice(0, 3)),
+      h("div", {}, h("div", { class: "title" }, x.game, h("span", { class: "st " + (x.state === "today" ? "started" : "past") }, stText)),
+        h("div", { class: "sub" }, x.label + " · resets next " + x.label)), act);
+  }));
+}
+function renderNotes(d) {
+  const box = $("notesBody");
+  if (!d.notifications.length) { setKids(box, h("div", { class: "empty" }, "Nothing sent yet.")); return; }
+  setKids(box, d.notifications.map((n) => h("div", { class: "note" },
+    h("div", { class: "head" }, h("span", { class: "title" }, n.title || "(no title)"),
+      h("span", { class: "small muted", title: clock(n.ts) }, ago(n.ts))),
+    h("div", { class: "msg" }, n.message),
+    n.ok ? null : h("div", { class: "fail" }, "Not delivered (ntfy was unreachable)"))));
+}
+function render(d) {
+    $("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  $("logoutBtn").hidden = !(d.auth.password_set && d.auth.logged_in);
+  renderSummary(d); renderDeck(d); renderRaces(d); renderDaily(d); renderNotes(d);
+  if (!settingsLoaded || loggedInLast !== d.auth.logged_in) { loggedInLast = d.auth.logged_in; loadSettings(); loadTests(); }
+}
+
+/* ---------- settings form ---------- */
+let schema = null, fieldEls = {};
+async function loadSettings() {
+  const r = await api("/api/settings");
+  if (!r.ok) return;
+  settingsLoaded = true; settingsDirty = false; schema = r.data; buildSettings();
+}
+function markDirty() {
+  if (settingsDirty) return;
+  settingsDirty = true;
+  const m = $("dirtyMsg"); if (m) m.hidden = false;
+  const b = $("saveBtn"); if (b) b.disabled = false;
+}
+function buildField(it, canEdit) {
+  const dis = !canEdit;
+  let ctl, get;
+  if (it.type === "bool") {
+    const cb = h("input", { type: "checkbox", checked: it.value === "1", disabled: dis, onchange: markDirty });
+    ctl = h("label", { class: "switch" }, cb, h("span", {}, "On")); get = () => (cb.checked ? "1" : "0");
+  } else if (it.type === "select") {
+    const sel = h("select", { class: "inp", disabled: dis, onchange: markDirty }, it.options.map((o) => h("option", { value: o }, o)));
+    sel.value = it.value; ctl = sel; get = () => sel.value;
+  } else if (it.type === "multi") {
+    const boxes = it.options.map((o) => h("input", { type: "checkbox", value: o, checked: it.value.split(",").includes(o), disabled: dis, onchange: markDirty }));
+    ctl = h("div", { class: "multi" }, it.options.map((o, i) => h("label", {}, boxes[i], (it.option_labels || {})[o] || o)));
+    get = () => boxes.filter((b) => b.checked).map((b) => b.value).join(",");
+  } else if (it.type === "secret") {
+    const inp = h("input", { class: "inp", type: "password", value: it.value, disabled: dis, autocomplete: "off",
+      placeholder: !canEdit && it.has_value ? "•••••• (set)" : "", oninput: markDirty });
+    const eye = h("button", { class: "btn secondary", type: "button", disabled: dis }, "Show");
+    eye.addEventListener("click", () => {                   // the label always names what the next click does
+      const reveal = inp.type === "password";
+      inp.type = reveal ? "text" : "password";
+      eye.textContent = reveal ? "Hide" : "Show";
+    });
+    ctl = h("div", { class: "secret" }, inp, eye); get = () => inp.value;
+  } else if (it.type === "int" || it.type === "float") {
+    const inp = h("input", { class: "inp", type: "number", value: it.value, step: it.type === "float" ? "any" : "1",
+      min: it.min, max: it.max, disabled: dis, oninput: markDirty });
+    ctl = inp; get = () => inp.value;
+  } else if (it.type === "time") {
+    const inp = h("input", { class: "inp", type: "time", value: it.value, disabled: dis, oninput: markDirty });
+    ctl = inp; get = () => inp.value;
+  } else {
+    const inp = h("input", { class: "inp", type: "text", value: it.value, disabled: dis, oninput: markDirty });
+    ctl = inp; get = () => inp.value;
+  }
+  const err = h("div", { class: "err", hidden: true });
+  fieldEls[it.key] = { get, err };
+  return h("div", { class: "field" },
+    h("label", { class: "lbl" }, it.label, it.recreate ? h("span", { class: "tag", title: "Needs the container to be recreated" }, "recreate") : null),
+    ctl,
+    it.help ? h("div", { class: "help" }, it.help + (it.type !== "secret" && it.default !== "" ? "  (default: " + it.default + ")" : "")) : null,
+    err);
+}
+function buildSettings() {
+  fieldEls = {};
+  const canEdit = !!schema.can_edit, nodes = [];
+  if (!canEdit) {
+    nodes.push(h("div", { class: "banner" },
+      schema.edit_note || (schema.password_set && !schema.logged_in ? "Log in to edit settings." : "Editing is unavailable."),
+      schema.password_set && !schema.logged_in ? [" ", h("button", { class: "linkbtn", onclick: showLogin }, "Log in")] : null));
+  }
+  schema.groups.forEach((g, i) => nodes.push(h("details", { class: "group", open: i === 0 && canEdit },
+    h("summary", {}, g.name), h("div", { class: "fields" }, g.items.map((it) => buildField(it, canEdit))))));
+  if (canEdit) {
+    nodes.push(h("div", { class: "savebar" },
+      h("button", { class: "btn", id: "saveBtn", disabled: true, onclick: saveSettings }, "Save & restart"),
+      h("button", { class: "btn secondary", onclick: () => { settingsLoaded = false; loadSettings(); } }, "Discard changes"),
+      h("span", { class: "dirty", id: "dirtyMsg", hidden: true }, "Unsaved changes"),
+      h("span", { class: "small muted" }, "Saving rewrites your .env and restarts the app (a few seconds).")));
+  }
+  setKids($("settingsBody"), nodes);
+}
+async function saveSettings() {
+  const values = {};
+  for (const [k, f] of Object.entries(fieldEls)) values[k] = f.get();
+  Object.values(fieldEls).forEach((f) => { f.err.hidden = true; });
+  const r = await api("/api/settings", { method: "POST", body: { values } });
+  if (r.status === 400 && r.data.errors) {
+    let first = null;
+    for (const [k, msg] of Object.entries(r.data.errors)) {
+      const f = fieldEls[k]; if (!f) continue;
+      f.err.textContent = msg; f.err.hidden = false;
+      const det = f.err.closest("details"); if (det) det.open = true;
+      first = first || f.err;
+    }
+    toast("Some values need fixing.", true); if (first) first.scrollIntoView({ block: "center" }); return;
+  }
+  if (!r.ok) { toast(r.data.error || "Couldn't save.", true); return; }
+  if (!r.data.restart) { toast("No changes to save."); return; }
+  settingsDirty = false;
+  const extra = (r.data.recreate_needed || []).length
+    ? " Note: " + r.data.recreate_needed.join(", ") + " only take effect after: docker compose up -d --force-recreate" : "";
+  $("restartMsg").textContent = "Restarting the app…" + extra;
+  $("restartOverlay").hidden = false;
+  waitForRestart(extra);
+}
+async function waitForRestart(extra) {
+  let sawDown = false;
+  for (let i = 0; i < 60; i++) {
+    await new Promise((res) => setTimeout(res, 1000));
+    try {
+      const r = await fetch("/health", { cache: "no-store" });
+      if (r.ok && (sawDown || i > 3)) { location.reload(); return; }
+    } catch (e) { sawDown = true; }
+  }
+  $("restartMsg").textContent = "The app is taking a while to come back. Check 'docker logs nascar-checkin', then reload this page." + (extra || "");
+}
+
+/* ---------- tests ---------- */
+let testsInfo = null, testsSig = "";
+const testState = {};                       // id -> { running, ok, output, at }
+async function loadTests() {
+  const r = await api("/api/tests");
+  if (!r.ok) return;
+  testsInfo = r.data; buildTests();
+}
+function buildTests() {
+  const t = testsInfo, canSend = !!t.can_send;
+  const runAllBtn = h("button", { class: "btn secondary", id: "runAllBtn", onclick: runAllReadOnly }, "Run all read-only checks");
+  const note = canSend ? "Orange tests put a real notification on your phone." :
+    (t.password_set ? "Log in to run the orange tests (they send real notifications)."
+                    : "Add DASHBOARD_PASSWORD to your .env to run the orange tests (they send real notifications).");
+  const tiles = t.tests.map((x) => {
+    const st = testState[x.id] || {};
+    const btn = h("button", { class: x.sends ? "btn" : "btn secondary", id: "run_" + x.id, disabled: st.running || (x.sends && !canSend),
+      style: x.sends ? "background:linear-gradient(#ff9a4d,#e06a1a);border-color:#ffb27a;box-shadow:0 6px 16px -8px rgba(255,138,61,.7)" : null,
+      onclick: () => runTest(x.id) }, st.running ? "Running…" : "Run");
+    const out = st.output !== undefined
+      ? [h("pre", { class: "tout " + (st.ok ? "good" : "bad") }, st.output),
+         h("div", { class: "tmeta " + (st.ok ? "" : "fail") }, (st.ok ? "✓ passed" : "✗ needs attention") + " · " + new Date(st.at).toLocaleTimeString())] : null;
+    return h("div", { class: "test" + (x.sends ? " sends" : "") },
+      h("div", { class: "thead" }, h("div", {}, h("span", { class: "tname" }, x.name),
+        h("span", { class: "tag2 " + (x.sends ? "send" : "read") }, x.sends ? "sends notification" : "read-only"),
+        x.network ? h("span", { class: "tag2 net" }, "contacts NASCAR") : null), btn),
+      h("div", { class: "tdesc" }, x.desc), out);
+  });
+  setKids($("testsBody"), h("div", { class: "tests-top" }, runAllBtn, h("span", { class: "small muted" }, note)), h("div", { class: "tgrid" }, tiles));
+}
+async function runTest(id) {
+  testState[id] = Object.assign({}, testState[id], { running: true }); buildTests();
+  const r = await api("/api/tests/run", { method: "POST", body: { id } });
+  if (r.ok) testState[id] = { ok: r.data.ok, output: r.data.output, at: Date.now() };
+  else testState[id] = { ok: false, output: r.data.error || "The test couldn't run.", at: Date.now() };
+  buildTests(); if (id === "icon_test") setTimeout(refresh, 800);
+}
+async function runAllReadOnly() {
+  for (const x of testsInfo.tests.filter((t) => !t.sends && t.id !== "icon_test")) await runTest(x.id);
+}
+
+/* ---------- refresh loop ---------- */
+async function refresh() {
+  try {
+    const r = await api("/api/dashboard");
+    if (r.ok) { if (loginNeeded) { loginNeeded = false; $("loginOverlay").hidden = true; } render(r.data); }
+    else if (r.status === 401) { $("updated").textContent = "login required"; }
+  } catch (e) { $("updated").textContent = "can't reach the app"; }
+}
+refresh();
+setInterval(() => { if (!document.hidden && !loginNeeded) refresh(); }, 5000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+</script>
+</body>
+</html>

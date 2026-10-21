@@ -11,7 +11,9 @@ Modes (ALERT_MODE):
   auto      live detection first; scheduled alert only as a safety net
             (default). If the live feed is unreachable, behaves like "schedule".
 
-Also serves a tiny HTTP endpoint (/status) for a Stream Deck key, and /icon.png.
+Also serves, on HTTP_PORT: /status for a Stream Deck key, /icon.png, and a dashboard at / (status, this week's
+races and daily games with 'points earned' buttons, the last notifications, and a settings editor that rewrites
+the mounted .env and restarts the app).
 
 Usage:
   python app.py            run the service
@@ -23,10 +25,15 @@ Usage:
   python app.py --daily [day]  send the daily dashboard reminder now (--daily-print just shows it)
   python app.py --test     send a test notification
 """
+import contextlib
+import hmac
+import io
 import json
 import logging
 import os
 import random
+import re
+import secrets
 import sys
 import threading
 import time
@@ -45,11 +52,237 @@ def env_int(name, default):
         return default
 
 
+# Series names. The second series is now the O'Reilly Auto Parts Series (it used to be called Xfinity), so the old
+# name is still accepted anywhere a series is typed in (.env, races.json, saved state) and means O'Reilly.
+SERIES_LABELS = {"cup": "Cup", "oreilly": "Oreilly", "truck": "Truck"}          # internal, class/URL safe
+SERIES_DISPLAY = {"Cup": "Cup", "Oreilly": "O'Reilly", "Truck": "Truck"}        # what people read
+SERIES_ALIASES = {"cup": "cup", "truck": "truck", "trucks": "truck", "xfinity": "oreilly", "oreilly": "oreilly",
+                  "o'reilly": "oreilly", "o\u2019reilly": "oreilly", "o'reilly auto parts": "oreilly"}
+
+
+def canon_series_key(x):
+    """'cup' / 'oreilly' / 'truck' for any accepted spelling, else None."""
+    return SERIES_ALIASES.get(str(x).strip().lower())
+
+
+def canon_label(x):
+    k = canon_series_key(x)
+    return SERIES_LABELS[k] if k else str(x)
+
+
+def series_name(label):
+    return SERIES_DISPLAY.get(label, label)
+
+
 def get_tz(name, default):
     try:
         return ZoneInfo(name)
     except Exception:
         return ZoneInfo(default)
+
+
+# ------------------------------------------------- settings schema + .env file ----
+# Every setting the dashboard can edit. "default" must match the default used further down.
+# type: text | secret | int | float | bool | time | select | multi | tz
+_DAYS_OPT = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def _s(key, label, group, typ, default, help_, **kw):
+    d = {"key": key, "label": label, "group": group, "type": typ, "default": default, "help": help_}
+    d.update(kw)
+    return d
+
+
+SETTINGS = [
+    _s("TZ", "Time zone", "Essentials", "tz", "UTC",
+       "Your time zone (IANA name, e.g. America/New_York). Used for every time shown and for the reminder times.",
+       required=True),
+    _s("NTFY_TOPIC", "ntfy topic", "Essentials", "secret", "",
+       "Long random name your phone subscribes to. Anyone who knows it can read your alerts.", required=True),
+    _s("ALERT_MODE", "Alert mode", "Alerts and timing", "select", "auto",
+       "auto = live detection first, scheduled time as a safety net. live = live detection only. "
+       "schedule = alert at the scheduled time.", options=["auto", "live", "schedule"]),
+    _s("SERIES", "Series to alert for", "Alerts and timing", "multi", "cup,oreilly,truck",
+       "Only these series get alerts and appear on the dashboard.", options=["cup", "oreilly", "truck"],
+       option_labels={"cup": "Cup", "oreilly": "O'Reilly", "truck": "Truck"}, aliases={"xfinity": "oreilly"},
+       allow_empty=False),
+    _s("FIRST_ALERT_MIN", "Schedule mode: minutes after start", "Alerts and timing", "int", 10,
+       "Used by schedule mode and when the live feed is down.", min=0, max=240),
+    _s("SCHED_FALLBACK_MIN", "'May not have started' wait (min)", "Alerts and timing", "int", 90,
+       "Auto mode: minutes past the scheduled time before you are told the race may be delayed.", min=0, max=600),
+    _s("HOT_GRACE_MIN", "Hot track grace (min)", "Alerts and timing", "int", 45,
+       "A hot track holds the delay notice back this long before it counts as a delay.", min=0, max=600),
+    _s("NUDGE_MIN", "Follow-up spacing (min)", "Alerts and timing", "int", 45,
+       "Minutes between the first alert and each follow-up.", min=1, max=600),
+    _s("NUDGES", "Follow-ups", "Alerts and timing", "int", 1,
+       "How many follow-up alerts after the first one (0 = none).", min=0, max=10),
+    _s("FALLBACK_LIVE_HOURS", "Stream Deck fallback (hours)", "Alerts and timing", "int", 2,
+       "If NASCAR's live feed is unavailable, the key stays green this long after the scheduled alert.",
+       min=1, max=24),
+    _s("EXCLUDE_NAMES", "Ignore races named", "Alerts and timing", "text", "arca",
+       "Comma-separated words; live races whose name contains one are ignored."),
+
+    _s("QUIET_DAYS", "No polling on", "Quiet hours", "multi", "mon,tue,wed,thu",
+       "No requests to nascar.com on these days (overrides below still apply).", options=_DAYS_OPT,
+       allow_empty=True),
+    _s("QUIET_START_HOUR", "Quiet from (hour)", "Quiet hours", "int", 22, "Hour of day (0-23) in the quiet-hours time zone.",
+       min=0, max=23),
+    _s("QUIET_END_HOUR", "Quiet until (hour)", "Quiet hours", "int", 6, "Hour of day (0-23).", min=0, max=23),
+    _s("QUIET_OVERRIDE", "Still poll for live/scheduled/postponed races", "Quiet hours", "bool", 1,
+       "Recommended on. Off means strictly no polling during quiet hours."),
+    _s("QUIET_TZ", "Quiet hours time zone", "Quiet hours", "tz", "America/New_York",
+       "Time zone the quiet days and hours are evaluated in."),
+
+    _s("PREVIEW", "Weekend preview", "Weekend preview", "bool", 1, "Send a weekly list of the weekend's races."),
+    _s("PREVIEW_DAY", "Preview day", "Weekend preview", "select", "thu", "Day of the week.", options=_DAYS_OPT),
+    _s("PREVIEW_TIME", "Preview time", "Weekend preview", "time", "18:00", "Your local time (24-hour)."),
+
+    _s("DAILY_REMINDER", "Daily reminder", "Daily dashboard reminder", "bool", 1,
+       "One notification a day to earn dashboard game points."),
+    _s("DAILY_REMINDER_TIME", "Reminder time", "Daily dashboard reminder", "time", "22:00", "Your local time (24-hour)."),
+    _s("DAILY_ONLY_CONFIGURED", "Only on days with a game", "Daily dashboard reminder", "bool", 0,
+       "Skip the reminder on days that have no game named below."),
+    _s("DASHBOARD_URL", "Dashboard link", "Daily dashboard reminder", "text", "",
+       "Page the reminder's button opens (blank = the leaderboard link below)."),
+    _s("GAME_MON", "Monday game", "Daily dashboard reminder", "text", "", "Leave blank for no named game."),
+    _s("GAME_TUE", "Tuesday game", "Daily dashboard reminder", "text", "", ""),
+    _s("GAME_WED", "Wednesday game", "Daily dashboard reminder", "text", "", ""),
+    _s("GAME_THU", "Thursday game", "Daily dashboard reminder", "text", "", ""),
+    _s("GAME_FRI", "Friday game", "Daily dashboard reminder", "text", "", ""),
+    _s("GAME_SAT", "Saturday game", "Daily dashboard reminder", "text", "", ""),
+    _s("GAME_SUN", "Sunday game", "Daily dashboard reminder", "text", "", ""),
+
+    _s("CHECKIN_URL", "Leaderboard link", "Notification buttons", "text", "https://www.nascar.com/leaderboard",
+       "Page the 'Open website' button opens."),
+    _s("APP_URL", "Open-app link", "Notification buttons", "text", "",
+       "Link that opens the NASCAR app (e.g. shortcuts://run-shortcut?name=NASCAR on iPhone). Blank = none."),
+    _s("APP_INTENT", "Open-app Android intent", "Notification buttons", "text", "",
+       "Android: name of the broadcast a MacroDroid/Tasker macro listens for. Used when the link above is blank."),
+    _s("APP_LABEL", "Open-app button text", "Notification buttons", "text", "Open NASCAR app", ""),
+    _s("WEB_LABEL", "Website button text", "Notification buttons", "text", "Open website", ""),
+    _s("ACK_TOKEN", "Button token", "Notification buttons", "secret", "",
+       "Secret that lets the notification's 'Checked in' / 'Points earned' buttons reach this server."),
+    _s("ACK_BASE_URL", "Button base address", "Notification buttons", "text", "",
+       "Address your phone can reach this server at, e.g. http://100.x.y.z:8099 (Tailscale)."),
+
+    _s("DASHBOARD_PASSWORD", "Dashboard password", "Dashboard", "secret", "",
+       "Required to edit settings. Blank = the dashboard is view-only. Sent over plain HTTP, so keep it on your "
+       "home network or Tailscale."),
+
+    _s("NTFY_URL", "ntfy server", "Advanced", "text", "https://ntfy.sh", ""),
+    _s("NTFY_TOKEN", "ntfy access token", "Advanced", "secret", "", "Only for a protected ntfy topic."),
+    _s("LIVE_POLL_SEC", "Live feed poll (seconds)", "Advanced", "int", 60, "", min=5, max=600),
+    _s("END_GRACE_MIN", "Race-over grace (min)", "Advanced", "float", 5, "Minutes not-live before a race counts as over.",
+       min=0, max=120),
+    _s("REFRESH_MIN", "Schedule refresh (min)", "Advanced", "int", 60, "", min=5, max=1440),
+    _s("WINDOW_HOURS", "Alert window (hours)", "Advanced", "int", 5, "How long after a scheduled start alerts can still go out.",
+       min=1, max=24),
+    _s("PRE_RACE_HOURS", "Poll before a race (hours)", "Advanced", "int", 2, "", min=0, max=12),
+    _s("PENDING_DAYS", "Watch postponed races (days)", "Advanced", "int", 4, "", min=0, max=14),
+    _s("EMPTY_RETRY_SEC", "Schedule retry (seconds)", "Advanced", "int", 300, "", min=30, max=3600),
+    _s("EMPTY_RETRY_QUIET_SEC", "Schedule retry, quiet hours (seconds)", "Advanced", "int", 900, "", min=60, max=86400),
+    _s("FEED_URL", "Schedule feed URL", "Advanced", "text", "https://cf.nascar.com/cacher/{year}/race_list_basic.json",
+       "Keep {year} where the year goes."),
+    _s("LIVE_FEED_URL", "Live feed URL", "Advanced", "text", "https://cf.nascar.com/live/feeds/live-feed.json", ""),
+    _s("FEED_TZ", "Schedule feed time zone", "Advanced", "tz", "America/New_York", ""),
+    _s("HTTP_PORT", "Dashboard / status port", "Advanced", "int", 8099,
+       "Needs the container to be recreated to take effect.", min=1, max=65535, recreate=True),
+    _s("ICON_URL", "Unraid icon URL", "Advanced", "text", "",
+       "Read by docker compose, not the app: needs the container to be recreated to take effect.", recreate=True),
+]
+SETTINGS_BY_KEY = {x["key"]: x for x in SETTINGS}
+SETTING_GROUPS = []
+for _x in SETTINGS:
+    if _x["group"] not in SETTING_GROUPS:
+        SETTING_GROUPS.append(_x["group"])
+
+CONFIG_FILE = os.environ.get("CONFIG_FILE", "/config/.env")
+
+
+def parse_env_text(text):
+    """Parse .env text into a dict. Supports KEY=VALUE, optional quotes, trailing ' # comment' on bare values."""
+    out = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[7:].strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            q, val = val[0], val[1:-1]
+            if q == '"':
+                val = val.replace('\\"', '"').replace("\\\\", "\\")
+        else:
+            m = re.search(r"\s#", val)
+            if m:
+                val = val[:m.start()].rstrip()
+        out[key] = val
+    return out
+
+
+def format_env_value(val):
+    """Bare when safe, otherwise double-quoted (compatible with docker compose and parse_env_text)."""
+    if re.fullmatch(r"[^\s#'\"$\\]*", val):
+        return val
+    return '"' + val.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def update_env_text(text, changes):
+    """Apply {KEY: value} to .env text, keeping comments and layout. Empty value = turn the line off
+    (commented out). A value equal to the default is only written if the key is required or already active."""
+    lines = text.split("\n")
+    active, commented = {}, {}
+    for i, ln in enumerate(lines):
+        st = ln.lstrip()
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=", st)
+        if m and not st.startswith("#"):
+            active[m.group(1)] = i
+            continue
+        m2 = re.match(r"^#\s*([A-Z][A-Z0-9_]*)=", st)
+        if m2:
+            commented.setdefault(m2.group(1), i)
+    appended = []
+    for key, val in changes.items():
+        spec = SETTINGS_BY_KEY.get(key, {})
+        default = "" if spec.get("default") in (None, "") else str(spec["default"])
+        keep = val != "" and (val != default or spec.get("required") or key in active)
+        if key in active:
+            lines[active[key]] = f"{key}={format_env_value(val)}" if val != "" else f"# {key}="
+        elif keep and key in commented:
+            lines[commented[key]] = f"{key}={format_env_value(val)}"
+        elif keep:
+            appended.append(f"{key}={format_env_value(val)}")
+    if appended:
+        while lines and lines[-1] == "":
+            lines.pop()
+        lines += ["", "# ---- added by the dashboard ----"] + appended
+    out = "\n".join(lines)
+    return out if out.endswith("\n") else out + "\n"
+
+
+def apply_config_file():
+    """Load CONFIG_FILE (the .env, bind-mounted into the container) over the environment so that the file is
+    the single source of truth and a restart picks up dashboard edits. Returns True if the file was read."""
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as f:
+            parsed = parse_env_text(f.read())
+    except OSError:
+        return False
+    for k in SETTINGS_BY_KEY:
+        if k not in parsed:
+            os.environ.pop(k, None)
+    os.environ.update(parsed)
+    if hasattr(time, "tzset"):
+        time.tzset()
+    return True
+
+
+CONFIG_LOADED = apply_config_file()
 
 
 # ---------------------------------------------------------------- config ----
@@ -98,7 +331,8 @@ PENDING_DAYS = env_int("PENDING_DAYS", 4)               # watch for a postponed 
 # Live races whose name contains any of these (case-insensitive) are ignored, as a safety net for
 # series that have no check-in (ARCA, etc.).
 EXCLUDE_NAMES = [x.strip().lower() for x in os.environ.get("EXCLUDE_NAMES", "arca").split(",") if x.strip()]
-ENABLED = {s.strip().lower() for s in os.environ.get("SERIES", "cup,xfinity,truck").split(",") if s.strip()}
+ENABLED = {canon_series_key(s) for s in os.environ.get("SERIES", "cup,oreilly,truck").split(",")
+           if canon_series_key(s)}
 
 # Weekly "race weekend" preview notification (sent from the saved schedule; contacts nothing but ntfy)
 PREVIEW = env_int("PREVIEW", 1)
@@ -118,6 +352,7 @@ try:
 except ValueError:
     DAILY_TIME = (22, 0)
 DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "").strip() or CHECKIN_URL
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "").strip()
 DAILY_GAMES = {d: os.environ.get(f"GAME_{d.upper()}", "").strip() for d in _DAYS}
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
@@ -126,8 +361,8 @@ ACK_BASE_URL = os.environ.get("ACK_BASE_URL", "").rstrip("/")
 ACK_TOKEN = os.environ.get("ACK_TOKEN", "").strip()
 ICON_PATH = os.environ.get("ICON_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png"))
 
-SERIES_KEYS = (("series_1", "Cup"), ("series_2", "Xfinity"), ("series_3", "Truck"))
-SERIES_BY_ID = {1: "Cup", 2: "Xfinity", 3: "Truck"}
+SERIES_KEYS = (("series_1", "Cup"), ("series_2", "Oreilly"), ("series_3", "Truck"))
+SERIES_BY_ID = {1: "Cup", 2: "Oreilly", 3: "Truck"}
 LIVE_FLAGS = {1, 2, 3, 4}     # green, yellow, red, white (race under way)
 END_FLAGS = {5, 9}            # checkered, cold track
 # flag_state -> name reported as "state" on /status (white counts as green; checkered/cold = offline)
@@ -156,8 +391,22 @@ def load_state():
             s = json.load(f)
     except Exception:
         pass
-    for k, v in (("sent", {}), ("acked", []), ("events", {}), ("starts", {}), ("last_error_alert", 0)):
+    for k, v in (("sent", {}), ("acked", []), ("events", {}), ("starts", {}), ("last_error_alert", 0), ("done", {})):
         s.setdefault(k, v)
+    return migrate_series(s)
+
+
+def migrate_series(s):
+    """Saved state from before the Xfinity -> O'Reilly rename: carry the old entries over."""
+    def fix(k):
+        return k.replace("live:Xfinity:", "live:Oreilly:").replace(":Xfinity:", ":Oreilly:")
+    for ev in s["events"].values():
+        if ev.get("series") == "Xfinity":
+            ev["series"] = "Oreilly"
+    s["events"] = {fix(k): v for k, v in s["events"].items()}
+    s["sent"] = {fix(k): v for k, v in s["sent"].items()}
+    s["acked"] = [fix(k) for k in s["acked"]]
+    s["done"] = {fix(k): v for k, v in s["done"].items()}
     return s
 
 
@@ -184,8 +433,8 @@ def load_manual(path):
     for r in raw:
         start = parse_dt(r["start"], LOCAL_TZ)
         races.append({
-            "id": r.get("id") or f'{r["series"]}-{r.get("name", "race")}',
-            "series": r["series"],
+            "id": r.get("id") or f'{canon_label(r["series"])}-{r.get("name", "race")}',
+            "series": canon_label(r["series"]),
             "name": r.get("name", "Race"),
             "track": r.get("track", ""),
             "start": start,
@@ -233,7 +482,7 @@ def cache_path():
 def load_schedule_cache():
     try:
         with open(cache_path()) as f:
-            return [{"id": r["id"], "series": r["series"], "name": r["name"], "track": r.get("track", ""),
+            return [{"id": r["id"], "series": canon_label(r["series"]), "name": r["name"], "track": r.get("track", ""),
                      "start": datetime.fromisoformat(r["start"])} for r in json.load(f)]
     except Exception:
         return []
@@ -297,12 +546,57 @@ def ntfy_publish(payload):
         headers["Authorization"] = "Bearer " + NTFY_TOKEN
     req = urllib.request.Request(NTFY_URL, data=json.dumps(payload).encode("utf-8"),
                                  headers=headers, method="POST")
+    ok = False
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return 200 <= resp.status < 300
+            ok = 200 <= resp.status < 300
     except Exception as e:
         log.warning("ntfy publish failed: %s", e)
-        return False
+    record_notification(payload, ok)
+    return ok
+
+
+HISTORY_LOCK = threading.Lock()
+
+
+def history_path():
+    return os.path.join(DATA_DIR, "history.jsonl")
+
+
+def record_notification(payload, ok):
+    """Append to the notification log (read by the dashboard). Never raises."""
+    try:
+        entry = {"ts": time.time(), "title": str(payload.get("title", ""))[:200],
+                 "message": str(payload.get("message", ""))[:1000], "ok": bool(ok)}
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with HISTORY_LOCK:
+            path = history_path()
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+            if os.path.getsize(path) > 100_000:                       # keep it small
+                with open(path, encoding="utf-8") as f:
+                    tail = f.readlines()[-50:]
+                with open(path, "w", encoding="utf-8") as f:
+                    f.writelines(tail)
+    except Exception:
+        log.exception("could not record notification")
+
+
+def recent_notifications(n=5):
+    try:
+        with open(history_path(), encoding="utf-8") as f:
+            lines = f.readlines()[-max(n * 3, 20):]
+    except OSError:
+        return []
+    out = []
+    for ln in reversed(lines):
+        try:
+            out.append(json.loads(ln))
+        except ValueError:
+            continue
+        if len(out) >= n:
+            break
+    return out
 
 
 def fmt_local(dt):
@@ -340,8 +634,8 @@ def interpret_live(data):
             "flag": flag,
             "run_type": to_int(first_key(it, "run_type")),
             "series_id": sid,
-            # only Cup/Xfinity/Truck have check-in; other series (ARCA etc.) are ignored
-            "supported": sid in SERIES_BY_ID and not any(
+            # only Cup/O'Reilly/Truck have check-in; other series (ARCA etc.) are ignored
+            "supported": sid in SERIES_BY_ID and SERIES_BY_ID[sid].lower() in ENABLED and not any(
                 x in str(first_key(it, "run_name", "race_name") or "").lower() for x in EXCLUDE_NAMES),
             "label": SERIES_BY_ID.get(sid, "NASCAR" if sid is None else f"series {sid}"),
             "race_id": first_key(it, "race_id"),
@@ -378,7 +672,7 @@ def poll_live(state, now_ts):
         if e0["flag"] != RT["flag"]:
             log.info("Feed flag %s -> %s (%s, series_id %s, run_type %s, lap %s, %r)%s", RT["flag"], e0["flag"],
                      e0["label"], e0["series_id"], e0["run_type"], e0.get("lap"), e0["name"],
-                     "" if e0["supported"] else " - IGNORED (not a Cup/Xfinity/Truck race)")
+                     "" if e0["supported"] else " - IGNORED (not a Cup/O'Reilly/Truck race)")
         RT["flag"], RT["flag_series"] = e0["flag"], e0["label"]
         RT["flag_is_race"] = e0["run_type"] in (None, 3) and e0["supported"]
         if e0["flag"] == 8 and RT["flag_is_race"]:
@@ -393,7 +687,8 @@ def poll_live(state, now_ts):
                 cur = LIVE.get(label)
                 new = not (cur and cur["source"] == "feed")
                 if new:
-                    LIVE[label] = {"source": "feed", "since": now_ts, "last_seen": now_ts}
+                    LIVE[label] = {"source": "feed", "since": now_ts, "last_seen": now_ts,
+                                   "race_id": e["race_id"], "name": e["name"]}
                 else:
                     cur["last_seen"] = now_ts
             if new:
@@ -413,8 +708,9 @@ def on_live_start(state, label, e, now_ts):
     with STATE_LOCK:
         if eid in state["events"]:
             return
-        state["events"][eid] = {"series": label, "name": e["name"] or f"{label} race",
-                                "first": now_ts, "source": "feed"}
+        state["events"][eid] = {"series": label, "name": e["name"] or f"{series_name(label)} race",
+                                "first": now_ts, "source": "feed",
+                                "ident": "" if e["race_id"] is None else str(e["race_id"])}
         save_state(state)
 
 
@@ -467,16 +763,68 @@ def status_snapshot():
     state = current_state(now_ts)
     testing = icon_test_state(now_ts) is not None
     if testing:
-        live = {"Cup", "Xfinity", "Truck"} if state in ("green", "yellow", "red") else set()
+        live = {"Cup", "Oreilly", "Truck"} if state in ("green", "yellow", "red") else set()
     out = {"live": bool(live), "state": state}
-    for s in ("Cup", "Xfinity", "Truck"):
+    for s in ("Cup", "Oreilly", "Truck"):
         out[s.lower()] = s in live
+    out["xfinity"] = out["oreilly"]          # old name, kept so existing Stream Deck rules keep working
     fresh = bool(RT["live_ok_ts"]) and now_ts - RT["live_ok_ts"] <= STATE_FRESH_SEC
     out.update({"flag": RT["flag"] if fresh else None, "series": RT["flag_series"] if fresh else None,
                 "test": testing, "mode": MODE, "polling": RT["poll_state"],
                 "live_feed_ok": bool(live_healthy(now_ts)),
                 "updated": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     return out
+
+
+# ------------------------------------------------------------ checklist (points earned) ----
+DASH = {"races": []}          # the current schedule, shared with the HTTP handler
+
+
+def race_ident(r):
+    """Stable id for a race, matching NASCAR's race_id for feed races."""
+    m = re.match(r"^\d{4}-series_\d+-(.+)$", r["id"])
+    return m.group(1) if m else r["id"]
+
+
+def race_key(r):
+    return f"race:{r['series']}:{race_ident(r)}"
+
+
+def resolve_race_key(series, ident, when_ts, races):
+    """Find the schedule race an alert belongs to (by race id, else nearest start time within 18 h)."""
+    for r in races:
+        if r["series"] == series and ident and race_ident(r) == str(ident):
+            return race_key(r)
+    best = None
+    for r in races:
+        if r["series"] == series:
+            d = abs(r["start"].timestamp() - when_ts)
+            if d <= 18 * 3600 and (best is None or d < best[0]):
+                best = (d, r)
+    return race_key(best[1]) if best else None
+
+
+def set_done(state, key, done):
+    with STATE_LOCK:
+        if done:
+            state["done"][key] = time.time()
+        else:
+            state["done"].pop(key, None)
+        cutoff = time.time() - 21 * 86400
+        for k in [k for k, v in state["done"].items() if v < cutoff]:
+            del state["done"][k]
+        save_state(state)
+
+
+def mark_event_done(state, eid):
+    """The notification's 'Checked in' button also ticks the race off on the dashboard."""
+    ev = state["events"].get(eid)
+    if not ev:
+        return
+    key = resolve_race_key(ev["series"], ev.get("ident"), ev["first"], DASH["races"])
+    if key:
+        set_done(state, key, True)
+        log.info("Checked off %s from the notification button", key)
 
 
 # ------------------------------------------------------------ quiet hours ----
@@ -528,7 +876,7 @@ def poll_decision(races, state, now):
 
 
 # ---------------------------------------------------------------- alerts ----
-def build_actions(eid=None, url=None, plain_label="Open leaderboard"):
+def build_actions(eid=None, url=None, plain_label="Open leaderboard", daily_date=None):
     """Notification buttons (ntfy allows at most 3): website, NASCAR app (optional), Checked in (optional)."""
     actions = [{"action": "view", "label": WEB_LABEL if (APP_URL or APP_INTENT) else plain_label,
                 "url": url or CHECKIN_URL, "clear": True}]
@@ -541,12 +889,15 @@ def build_actions(eid=None, url=None, plain_label="Open leaderboard"):
         ack = f'{ACK_BASE_URL}/ack/{urllib.parse.quote(eid, safe="")}?t={ACK_TOKEN}'
         actions.append({"action": "http", "label": "Checked in", "url": ack,
                         "method": "POST", "clear": True})
+    if daily_date and HTTP_PORT and ACK_BASE_URL and ACK_TOKEN:
+        ack = f"{ACK_BASE_URL}/ackdaily/{daily_date}?t={ACK_TOKEN}"
+        actions.append({"action": "http", "label": "Points earned", "url": ack, "method": "POST", "clear": True})
     return actions
 
 
 def send_alert(eid, ev, stage):
     first = stage == 0
-    series, name = ev["series"], ev["name"]
+    series, name = series_name(ev["series"]), ev["name"]
     src = ev["source"]
     if src == "feed":
         title = f"{series} race is live - check in" if first else f"Still time: {series} check-in"
@@ -643,7 +994,8 @@ def schedule_tick(races, state, now):
         with STATE_LOCK:
             state["events"][eid] = {
                 "series": r["series"], "name": r["name"], "first": first.timestamp(),
-                "sched": r["start"].timestamp(), "source": "fallback" if healthy else "schedule"}
+                "sched": r["start"].timestamp(), "source": "fallback" if healthy else "schedule",
+                "ident": race_ident(r)}
             if hot is not None:
                 state["events"][eid]["hot_min"] = int(hot)
             save_state(state)
@@ -663,7 +1015,7 @@ def check_reschedules(races, state, now):
             except ValueError:
                 moved = False
             if moved and r["start"] > now - timedelta(hours=WINDOW_HOURS):
-                ntfy_publish({"title": f'{r["series"]} race moved',
+                ntfy_publish({"title": f'{series_name(r["series"])} race moved',
                               "message": f'{r["name"]}: {fmt_local(od)} -> {fmt_local(r["start"])}',
                               "priority": 3, "tags": ["calendar"]})
                 log.info("Reschedule: %s %s -> %s", r["name"], old, iso)
@@ -696,8 +1048,8 @@ PREVIEW_VARIATIONS = [
     ("Clear your schedule", "Clear your schedule: {series} this weekend!"),
     ("Drivers, to your cars", "Drivers, to your cars! {series} on deck this weekend:"),
 ]
-SERIES_ORDER = ["Truck", "Xfinity", "Cup"]
-SERIES_PLURAL = {"Truck": "Trucks", "Xfinity": "Xfinity", "Cup": "Cup"}
+SERIES_ORDER = ["Truck", "Oreilly", "Cup"]
+SERIES_PLURAL = {"Truck": "Trucks", "Oreilly": "O'Reilly", "Cup": "Cup"}
 
 
 def join_words(items):
@@ -732,7 +1084,7 @@ def build_preview(races, now, last_idx=None, rng=random):
         nxt = upcoming[0]
         return ("No races this weekend",
                 f"Nothing on the NASCAR schedule this weekend. Enjoy the break! "
-                f"Next up: {nxt['series']} {nxt['name']} on {fmt_when(nxt['start'])}.", None)
+                f"Next up: {series_name(nxt['series'])} {nxt['name']} on {fmt_when(nxt['start'])}.", None)
     options = [i for i in range(len(PREVIEW_VARIATIONS)) if i != last_idx]
     idx = rng.choice(options)
     title, intro = PREVIEW_VARIATIONS[idx]
@@ -741,7 +1093,7 @@ def build_preview(races, now, last_idx=None, rng=random):
     lines = [intro.format(series=join_words(SERIES_PLURAL.get(s, s) for s in present)), ""]
     for r in week:
         place = f" at {r['track']}" if r.get("track") else ""
-        lines.append(f"\u2022 {fmt_when(r['start'])} \u2013 {r['series']}: {r['name']}{place}")
+        lines.append(f"\u2022 {fmt_when(r['start'])} \u2013 {series_name(r['series'])}: {r['name']}{place}")
     return title, "\n".join(lines), idx
 
 
@@ -802,7 +1154,8 @@ def maybe_send_daily(state, now):
         title, body = built
         if not ntfy_publish({"title": title, "message": body, "priority": 3, "tags": ["video_game"],
                              "click": DASHBOARD_URL,
-                             "actions": build_actions(None, DASHBOARD_URL, "Open dashboard")}):
+                             "actions": build_actions(None, DASHBOARD_URL, "Open dashboard",
+                                                  daily_date=today)}):
             return                      # try again on the next tick
         log.info("Daily reminder sent (%s)", title)
     with STATE_LOCK:
@@ -810,29 +1163,563 @@ def maybe_send_daily(state, now):
         save_state(state)
 
 
+# --------------------------------------------------------- custom key icons / banner ----
+BANNER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "banner.jpg")
+MAX_ICON_BYTES = 512 * 1024
+ICON_TYPES = {"png": "image/png", "jpg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
+
+
+def sniff_image(data):
+    """File extension for the image types the dashboard accepts, judged by the file's first bytes."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data[:4] == b"GIF8":
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def icon_dir():
+    return os.path.join(DATA_DIR, "icons")
+
+
+def custom_icon(state):
+    """(path, content type) of an uploaded icon for this state, or None."""
+    for ext, ctype in ICON_TYPES.items():
+        path = os.path.join(icon_dir(), f"{state}.{ext}")
+        if os.path.isfile(path):
+            return path, ctype
+    return None
+
+
+def save_custom_icon(state, data):
+    ext = sniff_image(data)
+    if ext is None:
+        raise ValueError("Use a PNG, JPEG, GIF or WebP image.")
+    os.makedirs(icon_dir(), exist_ok=True)
+    reset_custom_icon(state)
+    with open(os.path.join(icon_dir(), f"{state}.{ext}"), "wb") as f:
+        f.write(data)
+
+
+def reset_custom_icon(state):
+    for ext in ICON_TYPES:
+        try:
+            os.remove(os.path.join(icon_dir(), f"{state}.{ext}"))
+        except OSError:
+            pass
+
+
+def icon_versions():
+    """{state: modified-time or None}; the dashboard uses it to show custom icons and bust its cache."""
+    out = {}
+    for st in TEST_STATES:
+        ci = custom_icon(st)
+        out[st] = int(os.path.getmtime(ci[0])) if ci else None
+    return out
+
+
+# ------------------------------------------------------------------ dashboard ----
+DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+DASHBOARD_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
+SESSIONS = {}                 # token -> expiry (memory only; a restart logs everyone out)
+LOGIN_FAILS = {}              # ip -> [timestamps]
+SESSION_SECONDS = 12 * 3600
+
+
+def week_bounds(now):
+    local = now.astimezone(LOCAL_TZ)
+    monday = (local - timedelta(days=local.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    return monday, monday + timedelta(days=7)
+
+
+def build_races_view(races, state, now):
+    """This race week (Monday-Sunday, local time): one row per race with its check-in state."""
+    monday, nxt = week_bounds(now)
+    enabled = [r for r in races if r["series"].lower() in ENABLED]
+    week = sorted((r for r in enabled if monday <= r["start"] < nxt), key=lambda r: r["start"])
+    with LIVE_LOCK:
+        live = {k: dict(v) for k, v in LIVE.items()}
+    latest_started = {}
+    for r in week:
+        if r["start"] <= now:
+            latest_started[r["series"]] = r
+    rows = []
+    with STATE_LOCK:
+        done = dict(state["done"])
+    for r in week:
+        key = race_key(r)
+        started = r["start"] <= now
+        age_h = (now - r["start"]).total_seconds() / 3600
+        lv = live.get(r["series"])
+        is_live = bool(lv and lv["source"] == "feed" and started and age_h < 10
+                       and latest_started.get(r["series"]) is r)
+        if is_live:
+            status = "live"
+        elif not started:
+            status = "upcoming"
+        elif age_h <= 12:
+            status = "started"
+        else:
+            status = "past"
+        rows.append({"key": key, "series": r["series"], "series_name": series_name(r["series"]),
+                     "name": r["name"], "track": r.get("track", ""),
+                     "when": fmt_when(r["start"]), "start_ts": r["start"].timestamp(), "status": status,
+                     "done": key in done, "done_ts": done.get(key), "can_mark": started})
+    next_up = []
+    if not rows:
+        upcoming = sorted((r for r in enabled if r["start"] > now and r["start"] < now + timedelta(days=21)),
+                          key=lambda r: r["start"])
+        next_up = [{"series": r["series"], "series_name": series_name(r["series"]),
+                    "name": r["name"], "track": r.get("track", ""),
+                    "when": fmt_when(r["start"])} for r in upcoming[:3]]
+    return rows, next_up
+
+
+def build_daily_view(state, now):
+    """Configured daily games for this week; only today's can be ticked."""
+    local = now.astimezone(LOCAL_TZ)
+    monday, _ = week_bounds(now)
+    today = local.date()
+    with STATE_LOCK:
+        done = dict(state["done"])
+    rows = []
+    for i, d in enumerate(_DAYS):
+        game = DAILY_GAMES.get(d, "")
+        if not game:
+            continue
+        date = (monday + timedelta(days=i)).date()
+        key = f"daily:{date.isoformat()}"
+        rows.append({"key": key, "day": d, "label": DAY_NAMES[i], "date": date.isoformat(), "game": game,
+                     "state": "today" if date == today else ("upcoming" if date > today else "past"),
+                     "done": key in done, "done_ts": done.get(key), "can_mark": date == today})
+    return rows
+
+
+def build_summary(races_rows, daily_rows):
+    pending = []
+    for r in races_rows:
+        if r["status"] in ("live", "started") and not r["done"]:
+            pending.append({"kind": "race", "label": f"{r['series_name']}: {r['name']}"})
+    for d in daily_rows:
+        if d["state"] == "today" and not d["done"]:
+            pending.append({"kind": "daily", "label": f"{d['game']} ({d['label']})"})
+    return {"pending": pending, "caught_up": not pending}
+
+
+def edit_block_reason():
+    if not DASHBOARD_PASSWORD:
+        return ("Editing is off. Add DASHBOARD_PASSWORD=<something> to your .env once (by hand), "
+                "recreate the container, and this section unlocks.")
+    if not CONFIG_LOADED:
+        return ("The .env file isn't visible to the app. Add the volume '- ./.env:/config/.env' to "
+                "docker-compose.yml and recreate the container.")
+    if not os.access(CONFIG_FILE, os.W_OK):
+        return "The .env file is mounted read-only. Remove ':ro' from its volume line in docker-compose.yml."
+    return ""
+
+
+def dashboard_payload(state, authed):
+    now = datetime.now(timezone.utc)
+    rows, next_up = build_races_view(DASH["races"], state, now)
+    daily = build_daily_view(state, now)
+    reason = edit_block_reason()
+    return {"now": now.timestamp(), "tz": LOCAL_TZ.key,
+            "summary": build_summary(rows, daily),
+            "status": status_snapshot(),
+            "states": TEST_STATES,
+            "races": rows, "next_up": next_up, "daily": daily,
+            "notifications": recent_notifications(5),
+            "icons": icon_versions(),
+            "auth": {"password_set": bool(DASHBOARD_PASSWORD), "logged_in": authed,
+                     "can_edit": authed and not reason, "edit_note": reason,
+                     "can_upload": authed and bool(DASHBOARD_PASSWORD)}}
+
+
+def current_file_values():
+    if CONFIG_LOADED:
+        try:
+            with open(CONFIG_FILE, encoding="utf-8") as f:
+                return parse_env_text(f.read())
+        except OSError:
+            pass
+    return {k: os.environ[k] for k in SETTINGS_BY_KEY if k in os.environ}
+
+
+def settings_payload(can_edit):
+    vals = current_file_values()
+    groups = []
+    for g in SETTING_GROUPS:
+        items = []
+        for sp in SETTINGS:
+            if sp["group"] != g:
+                continue
+            default = "" if sp["default"] in (None, "") else str(sp["default"])
+            raw = vals.get(sp["key"])
+            if raw is not None and sp["type"] == "multi" and sp.get("aliases"):
+                raw = ",".join(dict.fromkeys(sp["aliases"].get(x.strip().lower(), x.strip().lower())
+                                             for x in raw.split(",") if x.strip()))
+            item = {k: sp[k] for k in ("key", "label", "type", "help", "options", "option_labels", "min", "max",
+                                       "recreate", "required") if k in sp}
+            item.update({"default": default, "in_file": raw is not None,
+                         "value": default if raw is None else raw})
+            if sp["type"] == "secret":
+                item["has_value"] = bool(raw)
+                if not can_edit:
+                    item["value"] = ""
+            items.append(item)
+        groups.append({"name": g, "items": items})
+    return {"groups": groups}
+
+
+def validate_value(spec, raw):
+    """Returns (normalized string, error message or None)."""
+    typ = spec["type"]
+    v = "" if raw is None else str(raw).strip()
+    if any(c in v for c in "\n\r\x00"):
+        return None, "No line breaks, please."
+    if "$" in v:
+        return None, "The $ character isn't supported."
+    if len(v) > 300:
+        return None, "Too long (300 characters max)."
+    if v == "":
+        if spec.get("required"):
+            return None, "This one is required."
+        if typ == "multi" and spec.get("allow_empty") is False:
+            return None, "Choose at least one."
+        return "", None
+    try:
+        if typ in ("text", "secret"):
+            return v, None
+        if typ in ("int", "float"):
+            n = int(v) if typ == "int" else float(v)
+            if "min" in spec and n < spec["min"]:
+                return None, f"Must be at least {spec['min']}."
+            if "max" in spec and n > spec["max"]:
+                return None, f"Must be at most {spec['max']}."
+            return (str(n) if typ == "int" else f"{n:g}"), None
+        if typ == "bool":
+            if v.lower() in ("1", "true", "yes", "on"):
+                return "1", None
+            if v.lower() in ("0", "false", "no", "off"):
+                return "0", None
+            return None, "Must be on or off."
+        if typ == "time":
+            m = re.fullmatch(r"(\d{1,2}):(\d{2})", v)
+            if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+                return None, "Use 24-hour HH:MM, e.g. 22:00."
+            return f"{int(m.group(1)):02d}:{m.group(2)}", None
+        if typ == "select":
+            if v.lower() not in spec["options"]:
+                return None, "Pick one of: " + ", ".join(spec["options"])
+            return v.lower(), None
+        if typ == "multi":
+            aliases = spec.get("aliases", {})
+            picked = {aliases.get(x.strip().lower(), x.strip().lower()) for x in v.split(",") if x.strip()}
+            bad = picked - set(spec["options"])
+            if bad:
+                return None, "Unknown: " + ", ".join(sorted(bad))
+            return ",".join(o for o in spec["options"] if o in picked), None
+        if typ == "tz":
+            ZoneInfo(v)
+            return v, None
+    except Exception:
+        return None, "Not a valid value."
+    return v, None
+
+
+def validate_settings(values):
+    clean, errors = {}, {}
+    for key, raw in values.items():
+        spec = SETTINGS_BY_KEY.get(key)
+        if spec is None:
+            errors[key] = "Unknown setting."
+            continue
+        val, err = validate_value(spec, raw)
+        if err:
+            errors[key] = err
+        else:
+            clean[key] = val
+    return clean, errors
+
+
+def schedule_restart(delay=1.0):
+    """Exit so docker's restart policy relaunches us with the new .env."""
+    def _go():
+        log.info("Restarting to apply new settings")
+        logging.shutdown()
+        os._exit(0)
+    threading.Timer(delay, _go).start()
+
+
+def save_settings(values):
+    """Returns (response dict, http status). Writes the .env in place, backs up the old one, restarts."""
+    reason = edit_block_reason()
+    if reason:
+        return {"ok": False, "error": reason}, 403
+    clean, errors = validate_settings(values)
+    if errors:
+        return {"ok": False, "errors": errors}, 400
+    cur = current_file_values()
+    changes = {}
+    for key, val in clean.items():
+        spec = SETTINGS_BY_KEY[key]
+        default = "" if spec["default"] in (None, "") else str(spec["default"])
+        old, _ = validate_value(spec, cur.get(key, default))
+        if (old if old is not None else cur.get(key, default)) != val:
+            changes[key] = val
+    if not changes:
+        return {"ok": True, "changed": [], "restart": False}, 200
+    with open(CONFIG_FILE, encoding="utf-8") as f:
+        old_text = f.read()
+    new_text = update_env_text(old_text, changes)
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(os.path.join(DATA_DIR, "env.backup"), "w", encoding="utf-8") as f:
+        f.write(old_text)
+    with open(CONFIG_FILE, "r+", encoding="utf-8") as f:       # in place: keeps a bind-mounted file linked
+        f.seek(0)
+        f.write(new_text)
+        f.truncate()
+    log.info("Settings saved from the dashboard: %s", ", ".join(sorted(changes)))
+    schedule_restart()
+    return {"ok": True, "changed": sorted(changes), "restart": True,
+            "recreate_needed": sorted(k for k in changes if SETTINGS_BY_KEY[k].get("recreate"))}, 200
+
+
+# -------------------------------------------------------------------- tests ----
+# The checks listed on the dashboard's Tests card (the same things the --test, --preview, --daily, --icon-test,
+# --polling, --probe and --list commands do). "sends" ones put a real notification on your phone.
+TEST_LOCK = threading.Lock()
+TEST_LAST_RUN = {}
+
+
+def _t_notification(state):
+    ok = ntfy_publish({"title": "NASCAR reminder test", "message": "If you see this, alerts work.", "priority": 3,
+                       "tags": ["white_check_mark"], "click": CHECKIN_URL, "actions": build_actions("test")})
+    return ok, ("Sent. Your phone should buzz, with the same buttons as a real alert." if ok else
+                "FAILED: ntfy couldn't be reached or refused it. Check the ntfy server address and topic.")
+
+
+def _preview_text(state):
+    built = build_preview(DASH["races"], datetime.now(timezone.utc), state.get("preview_last"))
+    return None if built is None else (built[0], built[1])
+
+
+def _t_preview_show(state):
+    built = _preview_text(state)
+    return True, ("Nothing to preview (no races in the next three weeks)." if built is None
+                  else f"[{built[0]}]\n{built[1]}")
+
+
+def _t_preview_send(state):
+    built = _preview_text(state)
+    if built is None:
+        return True, "Nothing to send (no races in the next three weeks)."
+    ok = ntfy_publish({"title": built[0], "message": built[1], "priority": 3, "tags": ["checkered_flag"]})
+    return ok, (f"Sent: [{built[0]}]\n{built[1]}" if ok else "FAILED: ntfy couldn't be reached.")
+
+
+def _t_daily_show(state):
+    lines = []
+    for i, d in enumerate(DAY_NAMES):
+        built = build_daily(i)
+        lines.append(f"{d}: " + ("(no reminder: only-on-game-days is on)" if built is None else f"[{built[0]}] {built[1]}"))
+    return True, "\n".join(lines)
+
+
+def _t_daily_send(state):
+    today = datetime.now(LOCAL_TZ)
+    built = build_daily(today.weekday())
+    if built is None:
+        return True, "Today has no reminder (only-on-game-days is on and no game is set for today)."
+    ok = ntfy_publish({"title": built[0], "message": built[1], "priority": 3, "tags": ["video_game"],
+                       "click": DASHBOARD_URL,
+                       "actions": build_actions(None, DASHBOARD_URL, "Open dashboard", daily_date=today.date().isoformat())})
+    return ok, (f"Sent: [{built[0]}] {built[1]}" if ok else "FAILED: ntfy couldn't be reached.")
+
+
+def _t_icon_test(state):
+    step = 20
+    now_ts = time.time()
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(icon_test_path(), "w") as f:
+        json.dump({"start": now_ts, "step": step, "until": now_ts + step * len(TEST_STATES)}, f)
+    return True, (f"Started. The key will show {' -> '.join(TEST_STATES)}, {step} s each ({step * len(TEST_STATES)} s total). "
+                  "Watch the Stream Deck card here and your real key. Nothing is sent to your phone.")
+
+
+def _t_polling(state):
+    now = datetime.now(timezone.utc)
+    ok, reason = poll_decision(DASH["races"], state, now)
+    return True, (f"Now ({QUIET_TZ.key}): {now.astimezone(QUIET_TZ).strftime('%a %I:%M %p')}\n"
+                  f"Quiet days: {'/'.join(sorted(QUIET_DAYS)) or 'none'} | quiet hours {QUIET_START_HOUR:02d}:00-{QUIET_END_HOUR:02d}:00\n"
+                  f"Polling nascar.com right now: {'YES' if ok else 'NO'} ({reason})")
+
+
+def _t_races(state):
+    now = datetime.now(timezone.utc)
+    up = sorted((r for r in DASH["races"] if r["series"].lower() in ENABLED
+                 and r["start"] + timedelta(hours=WINDOW_HOURS) > now), key=lambda r: r["start"])
+    if not up:
+        return True, "No upcoming races in the saved schedule."
+    return True, f"{len(up)} upcoming/live races (times in {LOCAL_TZ.key}); first 15:\n" + "\n".join(
+        f"{series_name(r['series']):8} {fmt_when(r['start']):22} {r['name']}" for r in up[:15])
+
+
+def _t_live_probe(state):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cmd_probe()
+    out = buf.getvalue().strip()
+    return "FAILED" not in out, out
+
+
+def _t_schedule_probe(state):
+    year = datetime.now(LOCAL_TZ).year
+    try:
+        data = fetch_feed(year)
+    except Exception as e:
+        return False, f"Download failed: {str(e)[:200]}"
+    races = parse_feed(data, year)
+    per = {}
+    for r in races:
+        per[r["series"]] = per.get(r["series"], 0) + 1
+    with_track = sum(1 for r in races if r.get("track"))
+    known = {}
+    for r in DASH["races"]:
+        known[r["series"]] = known.get(r["series"], 0) + 1
+    lines = [f"Downloaded the {year} schedule feed: {len(races)} races",
+             "Per series: " + (", ".join(f"{series_name(k)} {v}" for k, v in sorted(per.items())) or "none"),
+             f"Track names present: {with_track} of {len(races)}",
+             f"Races the app has saved: {len(DASH['races'])}"]
+    missing = [series_name(k) for k in SERIES_LABELS.values() if k.lower() in ENABLED and per.get(k, 0) == 0]
+    ok = bool(races) and not missing
+    if missing:
+        lines.append("WARNING: the feed has no races for " + ", ".join(missing)
+                     + ". NASCAR sometimes sends partial data; the app keeps its saved copy.")
+    return ok, "\n".join(lines)
+
+
+TESTS = [
+    {"id": "notification", "name": "Send a test notification", "sends": True, "fn": _t_notification,
+     "desc": "Sends a real notification with the same buttons as an alert. Confirms your phone, the ntfy topic and the buttons."},
+    {"id": "preview_show", "name": "Show the weekend preview", "sends": False, "fn": _t_preview_show,
+     "desc": "Shows what the Thursday race-weekend notification would say. Nothing is sent."},
+    {"id": "preview_send", "name": "Send the weekend preview now", "sends": True, "fn": _t_preview_send,
+     "desc": "Sends the weekend preview to your phone right now (the weekly one still goes out on its own)."},
+    {"id": "daily_show", "name": "Show the daily reminders", "sends": False, "fn": _t_daily_show,
+     "desc": "Shows each weekday's reminder text, including the game names from your settings. Nothing is sent."},
+    {"id": "daily_send", "name": "Send today's daily reminder now", "sends": True, "fn": _t_daily_send,
+     "desc": "Sends today's dashboard-games reminder to your phone, with its buttons."},
+    {"id": "icon_test", "name": "Run the key icon test", "sends": False, "fn": _t_icon_test,
+     "desc": "Cycles the Stream Deck status through green, yellow, red, hot and offline. Watch the key card here and your real key."},
+    {"id": "polling", "name": "Check polling status", "sends": False, "fn": _t_polling,
+     "desc": "Shows whether the app may contact nascar.com right now (quiet days and hours), and why."},
+    {"id": "races", "name": "List upcoming races", "sends": False, "fn": _t_races,
+     "desc": "The races the app will alert for, from its saved schedule, in your time zone."},
+    {"id": "live_probe", "name": "Check the live feed", "sends": False, "fn": _t_live_probe, "network": True,
+     "desc": "Reads NASCAR's live feed now and shows how the app reads it: flag, series, and whether it counts as live."},
+    {"id": "schedule_probe", "name": "Check the schedule feed", "sends": False, "fn": _t_schedule_probe, "network": True,
+     "desc": "Downloads NASCAR's schedule feed and counts races per series, to spot partial or empty responses."},
+]
+TESTS_BY_ID = {t["id"]: t for t in TESTS}
+
+
+def run_test(test_id, state):
+    """Returns (ok, output). One test at a time; output is plain text."""
+    t = TESTS_BY_ID[test_id]
+    with TEST_LOCK:
+        try:
+            ok, out = t["fn"](state)
+        except Exception as e:
+            log.exception("test %s failed", test_id)
+            ok, out = False, f"The test crashed: {e}"
+    return bool(ok), str(out)
+
+
 # ------------------------------------------------------------------ http ----
 class Handler(BaseHTTPRequestHandler):
     state = None
+    MAX_BODY = 65536
 
     def log_message(self, *a):
         pass
 
-    def _send(self, code, body, ctype="text/plain"):
+    # ---- helpers
+    def _send(self, code, body, ctype="text/plain", headers=None):
         data = body if isinstance(body, bytes) else body.encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        if "Cache-Control" not in (headers or {}):
+            self.send_header("Cache-Control", "no-store")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
 
-    def _handle(self):
+    def _json(self, code, obj, headers=None):
+        self._send(code, json.dumps(obj), "application/json", headers)
+
+    def _token(self):
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == "nc_session":
+                return v
+        return ""
+
+    def _authed(self):
+        tok = self._token()
+        exp = SESSIONS.get(tok)
+        if exp and exp > time.time():
+            return True
+        SESSIONS.pop(tok, None)
+        return False
+
+    def _can_view(self):
+        return (not DASHBOARD_PASSWORD) or self._authed()
+
+    def _body(self):
+        """Parsed JSON body of a POST. Needs the custom header, which a cross-site form can't send."""
+        if self.headers.get("X-Requested-With") != "nc-dashboard":
+            raise PermissionError("missing header")
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > self.MAX_BODY:
+            raise ValueError("body too large")
+        raw = self.rfile.read(n) if n else b"{}"
+        data = json.loads(raw.decode("utf-8") or "{}")
+        if not isinstance(data, dict):
+            raise ValueError("expected an object")
+        return data
+
+    # ---- routing
+    def do_GET(self):
+        self._route("GET")
+
+    def do_POST(self):
+        self._route("POST")
+
+    def _route(self, method):
+        try:
+            self._dispatch(method)
+        except PermissionError:
+            self._json(403, {"error": "forbidden"})
+        except (ValueError, json.JSONDecodeError):
+            self._json(400, {"error": "bad request"})
+        except Exception:
+            log.exception("request failed: %s %s", method, self.path)
+            self._json(500, {"error": "internal error"})
+
+    def _dispatch(self, method):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if path == "/health":
             return self._send(200, "ok")
         if path == "/status":
-            return self._send(200, json.dumps(status_snapshot()), "application/json")
+            return self._json(200, status_snapshot())
         if path == "/status/text":
             return self._send(200, "LIVE" if status_snapshot()["live"] else "IDLE")
         if path == "/icon.png":
@@ -841,6 +1728,27 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, f.read(), "image/png")
             except OSError:
                 return self._send(404, "no icon")
+        if path == "/banner.jpg":
+            try:
+                with open(BANNER_PATH, "rb") as f:
+                    return self._send(200, f.read(), "image/jpeg", {"Cache-Control": "public, max-age=86400"})
+            except OSError:
+                return self._send(404, "no banner")
+        m = re.fullmatch(r"/icons/([a-z]+)", path)
+        if m and method == "GET":
+            ci = custom_icon(m.group(1)) if m.group(1) in TEST_STATES else None
+            if not ci:
+                return self._send(404, "no custom icon")
+            with open(ci[0], "rb") as f:
+                return self._send(200, f.read(), ci[1], {"Cache-Control": "public, max-age=3600"})
+        if path in ("/", "/dashboard") and method == "GET":
+            try:
+                with open(DASHBOARD_HTML, "rb") as f:
+                    return self._send(200, f.read(), "text/html; charset=utf-8")
+            except OSError:
+                return self._send(404, "dashboard.html is missing from the image")
+        if path.startswith("/api/"):
+            return self._api(method, path)
         parts = path.split("/")
         if len(parts) == 3 and parts[1] == "ack":
             if not ACK_TOKEN or urllib.parse.parse_qs(parsed.query).get("t", [""])[0] != ACK_TOKEN:
@@ -851,11 +1759,137 @@ class Handler(BaseHTTPRequestHandler):
                     self.state["acked"].append(rid)
                     save_state(self.state)
             log.info("Acked %s", rid)
+            mark_event_done(self.state, rid)
+            return self._send(200, "ok")
+        if len(parts) == 3 and parts[1] == "ackdaily":
+            if not ACK_TOKEN or urllib.parse.parse_qs(parsed.query).get("t", [""])[0] != ACK_TOKEN:
+                return self._send(403, "forbidden")
+            day = urllib.parse.unquote(parts[2])
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                return self._send(400, "bad date")
+            set_done(self.state, f"daily:{day}", True)
+            log.info("Daily activity for %s marked done", day)
             return self._send(200, "ok")
         self._send(404, "not found")
 
-    do_GET = _handle
-    do_POST = _handle
+    def _api(self, method, path):
+        if path == "/api/login" and method == "POST":
+            return self._login()
+        if path == "/api/logout" and method == "POST":
+            self._body()
+            SESSIONS.pop(self._token(), None)
+            return self._json(200, {"ok": True}, {"Set-Cookie": "nc_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"})
+        if not self._can_view():
+            return self._json(401, {"error": "login required", "password_set": True})
+        if path == "/api/dashboard" and method == "GET":
+            return self._json(200, dashboard_payload(self.state, self._authed()))
+        if path == "/api/settings" and method == "GET":
+            can_edit = self._authed() and not edit_block_reason()
+            out = settings_payload(can_edit)
+            out.update({"can_edit": can_edit, "edit_note": edit_block_reason(),
+                        "logged_in": self._authed(), "password_set": bool(DASHBOARD_PASSWORD)})
+            return self._json(200, out)
+        if path == "/api/settings" and method == "POST":
+            body = self._body()
+            if not self._authed():
+                return self._json(403, {"ok": False, "error": "Log in to change settings."})
+            values = body.get("values")
+            if not isinstance(values, dict):
+                raise ValueError("values missing")
+            resp, code = save_settings(values)
+            return self._json(code, resp)
+        if path == "/api/done" and method == "POST":
+            return self._done(self._body())
+        if path == "/api/tests" and method == "GET":
+            return self._json(200, {"tests": [{"id": t["id"], "name": t["name"], "desc": t["desc"],
+                                               "sends": t["sends"], "network": bool(t.get("network"))} for t in TESTS],
+                                    "can_send": bool(DASHBOARD_PASSWORD and self._authed()),
+                                    "password_set": bool(DASHBOARD_PASSWORD)})
+        if path == "/api/tests/run" and method == "POST":
+            return self._run_test(self._body())
+        m = re.fullmatch(r"/api/icon/([a-z]+)(/reset)?", path)
+        if m and method == "POST":
+            return self._icon(m.group(1), bool(m.group(2)))
+        self._json(404, {"error": "not found"})
+
+    def _run_test(self, body):
+        tid = str(body.get("id", ""))
+        t = TESTS_BY_ID.get(tid)
+        if t is None:
+            return self._json(404, {"ok": False, "error": "Unknown test."})
+        if t["sends"] and not (DASHBOARD_PASSWORD and self._authed()):
+            return self._json(403, {"ok": False, "error": "Log in with the dashboard password to run tests that send "
+                                                           "notifications (set DASHBOARD_PASSWORD in .env if you haven't)."})
+        now = time.time()
+        if now - TEST_LAST_RUN.get(tid, 0) < 2:
+            return self._json(429, {"ok": False, "error": "Easy: that test just ran."})
+        TEST_LAST_RUN[tid] = now
+        ok, out = run_test(tid, self.state)
+        return self._json(200, {"ok": ok, "id": tid, "output": out, "ran_at": time.time()})
+
+    def _icon(self, state, reset):
+        if self.headers.get("X-Requested-With") != "nc-dashboard":
+            raise PermissionError("missing header")
+        if state not in TEST_STATES:
+            return self._json(404, {"ok": False, "error": "Unknown state."})
+        if not (DASHBOARD_PASSWORD and self._authed()):
+            return self._json(403, {"ok": False, "error": "Set a dashboard password and log in to change icons."})
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > MAX_ICON_BYTES:
+            self.rfile.read(min(n, 1 << 20))
+            return self._json(413, {"ok": False, "error": "That image is over 512 KB."})
+        data = self.rfile.read(n) if n else b""
+        if reset:
+            reset_custom_icon(state)
+            return self._json(200, {"ok": True})
+        try:
+            save_custom_icon(state, data)
+        except ValueError as e:
+            return self._json(400, {"ok": False, "error": str(e)})
+        return self._json(200, {"ok": True})
+
+    def _login(self):
+        body = self._body()
+        if not DASHBOARD_PASSWORD:
+            return self._json(400, {"ok": False, "error": "No password is set."})
+        ip = self.client_address[0]
+        now = time.time()
+        fails = [t for t in LOGIN_FAILS.get(ip, []) if now - t < 300]
+        if len(fails) >= 5:
+            LOGIN_FAILS[ip] = fails
+            return self._json(429, {"ok": False, "error": "Too many attempts. Try again in a few minutes."})
+        given = str(body.get("password", "")).encode()
+        if not hmac.compare_digest(given, DASHBOARD_PASSWORD.encode()):
+            LOGIN_FAILS[ip] = fails + [now]
+            return self._json(401, {"ok": False, "error": "Wrong password."})
+        LOGIN_FAILS.pop(ip, None)
+        for t in [t for t, e in SESSIONS.items() if e <= now]:
+            del SESSIONS[t]
+        tok = secrets.token_hex(24)
+        SESSIONS[tok] = now + SESSION_SECONDS
+        cookie = f"nc_session={tok}; Path=/; Max-Age={SESSION_SECONDS}; HttpOnly; SameSite=Strict"
+        return self._json(200, {"ok": True}, {"Set-Cookie": cookie})
+
+    def _done(self, body):
+        key, done = str(body.get("key", "")), bool(body.get("done", True))
+        now = datetime.now(timezone.utc)
+        if key.startswith("race:"):
+            rows, _ = build_races_view(DASH["races"], self.state, now)
+            row = next((r for r in rows if r["key"] == key), None)
+            if row is None:
+                return self._json(404, {"ok": False, "error": "That race isn't on this week's list."})
+            if done and not row["can_mark"]:
+                return self._json(400, {"ok": False, "error": "That race hasn't started yet."})
+        elif key.startswith("daily:"):
+            row = next((d for d in build_daily_view(self.state, now) if d["key"] == key), None)
+            if row is None:
+                return self._json(404, {"ok": False, "error": "That activity isn't on this week's list."})
+            if not row["can_mark"]:
+                return self._json(400, {"ok": False, "error": "Only today's activity can be changed."})
+        else:
+            return self._json(400, {"ok": False, "error": "Unknown item."})
+        set_done(self.state, key, done)
+        return self._json(200, {"ok": True, "key": key, "done": done})
 
 
 # --------------------------------------------------------------- service ----
@@ -867,7 +1901,7 @@ def run_service():
         Handler.state = state
         srv = ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), Handler)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
-        log.info("HTTP on :%d (/status, /icon.png%s)", HTTP_PORT, ", /ack" if ACK_TOKEN else "")
+        log.info("HTTP on :%d (dashboard at /, /status, /icon.png%s)", HTTP_PORT, ", /ack" if ACK_TOKEN else "")
     races, last_refresh, last_live = [], 0.0, 0.0
     log.info("Started. mode=%s series=%s quiet=%s %02d:00-%02d:00 %s", MODE, ",".join(sorted(ENABLED)),
              "/".join(sorted(QUIET_DAYS)), QUIET_START_HOUR, QUIET_END_HOUR, QUIET_TZ.key)
@@ -888,6 +1922,7 @@ def run_service():
             every, allowed = (EMPTY_RETRY_SEC if may_poll else EMPTY_RETRY_QUIET_SEC), True
         if last_refresh == 0.0 or (allowed and now_ts - last_refresh > every):
             races, src = load_races(races)
+            DASH["races"] = races
             last_refresh = now_ts
             log.info("Loaded %d races from %s", len(races), src)
             if races:
@@ -923,7 +1958,7 @@ def cmd_list():
                        and r["start"] + timedelta(hours=WINDOW_HOURS) > now), key=lambda r: r["start"])
     print(f"Source: {src} | mode: {MODE} | {len(upcoming)} upcoming/live | times in {LOCAL_TZ.key}")
     for r in upcoming[:25]:
-        print(f'{r["series"]:8} {fmt_local(r["start"]):22} {r["name"]}')
+        print(f'{series_name(r["series"]):8} {fmt_local(r["start"]):22} {r["name"]}')
 
 
 def cmd_probe():
@@ -940,7 +1975,7 @@ def cmd_probe():
     healthy, entries = interpret_live(data)
     print("Recognised flag_state:", healthy)
     for e in entries:
-        why = "" if e["supported"] else " (not a Cup/Xfinity/Truck race: ignored)"
+        why = "" if e["supported"] else " (not a Cup/O'Reilly/Truck race: ignored)"
         print(" ", e, "=> LIVE" if entry_is_live(e) else "=> not live" + why)
     print("Flags: 1 green, 2 yellow, 3 red, 4 white, 5 checkered, 8 hot track, 9 cold track. run_type 3 = race.")
 
@@ -1022,7 +2057,8 @@ def cmd_daily(send):
     print(f"[{_DAYS[idx]}] {title}\n{body}")
     if send:
         ok = ntfy_publish({"title": title, "message": body, "priority": 3, "tags": ["video_game"],
-                           "click": DASHBOARD_URL, "actions": build_actions(None, DASHBOARD_URL, "Open dashboard")})
+                           "click": DASHBOARD_URL, "actions": build_actions(None, DASHBOARD_URL, "Open dashboard",
+                                                                    daily_date=datetime.now(LOCAL_TZ).date().isoformat())})
         print("\nsent" if ok else "\nFAILED (see log)")
 
 

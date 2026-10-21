@@ -10,6 +10,8 @@ services:
       - "${HTTP_PORT:-8099}:${HTTP_PORT:-8099}"    # LAN only - do NOT forward this port on your router
     volumes:
       - /mnt/user/appdata/nascar-checkin:/data     # saved schedule + state; keep this OUTSIDE the git clone
+      # The app reads (and, from the dashboard, rewrites) this file. Keep it read-write.
+      - ./.env:/config/.env
     labels:
       # Icon shown in the Unraid Docker tab (Unraid downloads it from this URL; set ICON_URL in .env)
       net.unraid.docker.icon: "${ICON_URL:-}"

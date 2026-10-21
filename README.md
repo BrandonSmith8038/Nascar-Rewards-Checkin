@@ -4,11 +4,14 @@
 > undocumented JSON feeds, which can change or disappear without notice. It only sends reminders: it never logs in
 > to nascar.com or automates the Fan Rewards check-in (the program terms prohibit that).
 
+> **Series names:** the second series is the O'Reilly Auto Parts Series (formerly Xfinity). Settings, `races.json` and saved
+> data that still say `xfinity` keep working and are treated as O'Reilly.
+
 ## Repository layout
 | Path | What it is |
 |---|---|
-| `app.py`, `Dockerfile`, `docker-compose.yml` | the reminder service (Python, standard library only) |
-| `icon.png` | container icon, also served at `/icon.png` |
+| `app.py`, `dashboard.html`, `Dockerfile`, `docker-compose.yml` | the reminder service (Python, standard library only) and its dashboard page |
+| `icon.png`, `banner.jpg` | container icon (also served at `/icon.png`) and the banner shown at the top of the dashboard; replace either file to change it |
 | `pc-listener.ps1` | optional Windows script that opens the leaderboard on alerts |
 | `races.example.json` | example manual schedule override |
 | `streamdeck/` | key images (`state_green.png`, `state_yellow.png`, `state_red.png`, `state_hot.png`, `state_offline.png`) |
@@ -43,7 +46,7 @@ Every update after that: push from your computer, then on the server run `./upda
 git-ignored; attach them to a GitHub Release instead.
 
 
-Sends a push when a Cup, Xfinity, or Truck race is **actually live** so you can press **Check In**
+Sends a push when a Cup, O'Reilly, or Truck race is **actually live** so you can press **Check In**
 yourself. It never logs into nascar.com or clicks anything (the Fan Rewards terms prohibit
 bots/automation for earning points).
 
@@ -80,6 +83,46 @@ Modes (`ALERT_MODE`): `auto` (default; live first, schedule as safety net), `liv
      checked during daytime hours for up to 4 days, so a Sunday race moved to Monday/Tuesday isn't missed.
 - `docker exec nascar-checkin python app.py --polling` shows whether polling is on right now and why.
   `/status` also reports `"polling"`.
+
+## Dashboard
+Open `http://YOUR-SERVER-IP:8099/` (same port as `/status`; keep it on your home network or Tailscale and don't forward
+it on your router). Dark theme, refreshes every 5 seconds:
+- **Header:** "All caught up" or what's still to do (races started but not ticked, today's daily game).
+- **Stream Deck key:** the state the key is showing (green / yellow / red / hot / offline) plus the facts behind it: flag
+  number, which series are live, whether the app is polling NASCAR right now, and whether the live feed is healthy.
+- **This week's races:** the current race week (Monday to Sunday, your time zone) with a **Mark checked in** button per
+  race. It unlocks when the race starts. Once ticked it stays ticked (undo link if you misclick); next week's races are
+  new rows, so each starts un-ticked. On a week with no races it shows the next ones.
+- **Daily dashboard games:** the days you named in settings (`GAME_MON` ... `GAME_SUN`) with **Mark done**. Only today's
+  game can be ticked; each weekday's entry starts fresh the following week.
+- **Preview icons:** under the key card, *Change preview icons* lets you upload your own image for each of the five
+  states (PNG, JPEG, GIF or WebP, up to 512 KB; needs the dashboard password). **This only changes the picture on the
+  dashboard.** Your actual Stream Deck key shows whichever images you chose in the plugin's settings (file paths on your
+  PC), and the plugin can't fetch images from this server, so upload the same files here if you want the page to match.
+  Reset returns a state to the built-in tile. Uploads are stored in `/data/icons/`.
+- **Tests:** every check the app has, each with a Run button and its output shown underneath: send a test notification,
+  show or send the weekend preview, show or send the daily reminders, run the key icon test, check polling status, list
+  upcoming races, and check NASCAR's live feed and schedule feed (those two do contact NASCAR). The orange ones put a real
+  notification on your phone and need the dashboard password; *Run all read-only checks* runs the rest in one go.
+- **Series colors:** Cup red, O'Reilly green, Truck yellow.
+- **Last 5 notifications:** what was sent, when, and whether ntfy accepted it.
+- **Settings:** every `.env` setting in a form, grouped, with validation and the default shown. **Save & restart** rewrites
+  your `.env` (comments and layout are kept; the previous version is saved to `/data/env.backup`) and restarts the app so
+  the change applies in a few seconds. `HTTP_PORT` and `ICON_URL` are read by docker compose, so they also need
+  `docker compose up -d --force-recreate`.
+
+**Password.** Viewing is open (like `/status`). Editing settings needs `DASHBOARD_PASSWORD` in `.env` - add it by hand once
+and recreate the container; the dashboard then asks you to log in (session lasts 12 hours, 5 wrong tries locks you out for
+5 minutes). It travels over plain HTTP, so this protects against other devices on your network, not against someone
+watching the wire. If you set the password, the whole dashboard asks for it (the Stream Deck `/status` endpoint stays open).
+
+**Notification buttons feed the checklist.** With the button address and token configured (`ACK_BASE_URL`, `ACK_TOKEN`),
+the race alert's **Checked in** button also ticks that race on the dashboard, and the daily reminder gets a **Points earned**
+button that ticks today's game.
+
+**Needs in `docker-compose.yml`:** the volume `- ./.env:/config/.env` (read-write) so the app can see and edit the file,
+and `restart: unless-stopped` (already there) so docker relaunches the app after a save. If you edit `.env` by hand
+instead, recreate the container as before (`docker compose up -d --force-recreate`).
 
 ## Daily dashboard reminder
 The Fan Rewards dashboard has games that earn extra points on top of the check-in. Once a day (default 22:00 your
@@ -151,7 +194,8 @@ Unraid caches icons; if it doesn't update, reload the Docker tab (or recreate th
 
 ## 2. Stream Deck key (multi-state)
 `http://UNRAID-IP:8099/status` (LAN only) returns JSON like
-`{"live": true, "state": "yellow", "flag": 2, "series": "Truck", "cup": false, "xfinity": false, "truck": true, ...}`
+`{"live": true, "state": "yellow", "flag": 2, "series": "Truck", "cup": false, "oreilly": false, "truck": true, ...}`
+(the second series is the O'Reilly Auto Parts Series, formerly Xfinity. The old `xfinity` key is still sent with the same value, so an existing Stream Deck rule keeps working.)
 
 | `state` | meaning (NASCAR flag number) |
 |---|---|
@@ -212,12 +256,13 @@ give each race a stable `"id"` so reschedule notices work).
 | HOT_GRACE_MIN | 45 | auto mode: a HOT track holds the "may not have started" notice back until it has been hot this long without a green flag (pre-race vs. jet dryers) |
 | APP_URL / APP_INTENT / APP_LABEL / WEB_LABEL | (empty) | optional "Open NASCAR app" button: APP_URL opens a link, APP_INTENT sends an Android broadcast (see above) |
 | PREVIEW / PREVIEW_DAY / PREVIEW_TIME | 1 / thu / 18:00 | weekly race-weekend preview (see above) |
-| EXCLUDE_NAMES | arca | live races whose name contains any of these words are ignored (only series_id 1-3 = Cup/Xfinity/Truck are ever alerted) |
+| EXCLUDE_NAMES | arca | live races whose name contains any of these words are ignored (only series_id 1-3 = Cup/O'Reilly/Truck are ever alerted) |
 | DAILY_REMINDER / DAILY_REMINDER_TIME / DAILY_ONLY_CONFIGURED / DASHBOARD_URL / GAME_MON..GAME_SUN | 1 / 22:00 / 0 / (leaderboard) / (empty) | daily dashboard reminder (see above) |
+| DASHBOARD_PASSWORD | (empty) | lets you log in and edit settings on the dashboard (see Dashboard) |
 | FIRST_ALERT_MIN | 10 | schedule mode: minutes after start |
 | NUDGE_MIN / NUDGES | 45 / 1 | follow-up spacing / count |
 | REFRESH_MIN | 60 | schedule re-pull interval (reschedule detection) |
-| SERIES | cup,xfinity,truck | series to alert for |
+| SERIES | cup,oreilly,truck | series to alert for (the old word `xfinity` still works and means O'Reilly) |
 | ACK_TOKEN, ACK_BASE_URL | off | "Checked in" button that stops nudges (URL must be reachable from your phone, e.g. Tailscale IP) |
 | LIVE_FEED_URL, FEED_URL, FEED_TZ | NASCAR CF feeds | override if the feeds move |
 
