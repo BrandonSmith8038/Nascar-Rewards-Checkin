@@ -43,11 +43,12 @@
   .linkbtn:hover:not(:disabled) { text-decoration: underline; }
   .linkbtn:disabled { color: var(--grey); cursor: default; }
 
+  /* Cards that share a row stretch to the same height, so their bottoms line up even when one has less to show. */
   main { max-width: 1880px; margin: 0 auto; padding: 22px; display: grid; gap: 18px;
-    grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); align-items: start; }
+    grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); align-items: stretch; }
   @media (min-width: 1500px) { #cardRaces, #cardNotes { grid-column: span 2; } }
   .card { --accent-c: #30363d; position: relative; border: 1px solid var(--line); border-top: 3px solid var(--accent-c);
-    border-radius: 14px; padding: 18px 20px 20px;
+    border-radius: 14px; padding: 18px 20px 20px; min-width: 0;
     background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0) 38%), var(--card);
     box-shadow: 0 10px 30px -18px rgba(0,0,0,.8); }
   .card.wide { grid-column: 1 / -1; }
@@ -67,15 +68,17 @@
   .chip { padding: 3px 11px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid var(--line); color: var(--muted); }
   .chip.active { color: #0b0f16; border-color: transparent; box-shadow: 0 0 14px -2px var(--glow, transparent); }
   .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); gap: 0 26px; margin-top: 12px; }
-  .fact { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; padding: 8px 0; border-bottom: 1px dashed var(--line); }
-  .fact .k { color: var(--muted); white-space: nowrap; }
-  .fact .v { text-align: right; white-space: nowrap; font-weight: 600; }
-  .series { display: inline-flex; gap: 12px; }
+  .fact { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; padding: 8px 0; border-bottom: 1px dashed var(--line); min-width: 0; }
+  .fact .k { color: var(--muted); white-space: nowrap; flex: none; }
+  /* The value may wrap onto a second line instead of running into the neighbouring column. */
+  .fact .v { text-align: right; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  .series { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 12px; }
   .series .s { display: inline-flex; align-items: center; font-weight: 600; }
   .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--grey); margin-right: 6px; }
   .dot.on { background: var(--green); box-shadow: 0 0 9px var(--green); }
-  .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px; letter-spacing: .05em; text-transform: uppercase; }
-  .badge.test { background: #3b2a5a; color: #d8bcff; }
+  .badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 5px; letter-spacing: .05em; text-transform: uppercase; line-height: 1.5; }
+  /* Named "testing" (not "test") so it can't pick up the Tests card tile styling. */
+  .badge.testing { background: #3b2a5a; color: #d8bcff; }
   details.icons { margin-top: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--card2); padding: 0 14px; }
   details.icons > summary { cursor: pointer; padding: 10px 0; font-weight: 600; color: var(--accent); list-style: none; }
   details.icons > summary::-webkit-details-marker { display: none; }
@@ -90,13 +93,18 @@
   .ibtns { display: flex; flex-direction: column; align-items: center; gap: 3px; }
 
   /* ---- lists ---- */
-  .row { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 11px 8px; margin: 0 -8px;
+  .row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 8px; margin: 0 -8px;
     border-top: 1px solid var(--line); border-radius: 8px; }
+  .row > div { min-width: 0; }
   .row:first-of-type { border-top-color: transparent; }
   .row:hover { background: rgba(255,255,255,.03); }
   .sr { font-size: 12px; font-weight: 800; padding: 3px 9px; border-radius: 7px; color: #0b0f16; min-width: 64px; text-align: center; }
   .sr.Cup { background: var(--cup); } .sr.Oreilly { background: var(--oreilly); } .sr.Truck { background: var(--truck); }
   .title { font-weight: 650; }
+  /* Race and game titles stay on one line: the name shortens with "..." if it must, the status tag never moves. */
+  .row .title { display: flex; align-items: baseline; min-width: 0; }
+  .row .title .tt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .row .title .st { flex: none; }
   .sub { color: var(--muted); font-size: 13px; }
   .st { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; margin-left: 8px; }
   .st.live { color: #5fe07f; text-shadow: 0 0 10px rgba(63,185,80,.7); animation: pulse 1.6s infinite; }
@@ -277,7 +285,10 @@ function pollText(p) {
   if (p === "active") return "On (race days)";
   if (p === "quiet-day") return "Off (quiet day)";
   if (p === "quiet-night") return "Off (quiet hours)";
-  if (p.startsWith("override")) return "On (" + p.replace(/^override:\s*/, "") + ")";
+  if (p.startsWith("override")) {
+    const why = p.replace(/^override:\s*/, "");
+    return "On (" + (why === "watching for postponed race" ? "postponed race" : why) + ")";
+  }
   return p;
 }
 function renderSummary(d) {
@@ -300,7 +311,7 @@ function renderDeck(d) {
       h("div", { class: "deck-info" },
         h("div", { class: "big", style: "color:" + color }, s.state.toUpperCase()),
         h("div", { class: "muted small" }, s.flag != null ? "flag " + s.flag + (s.series ? " · " + s.series : "") : "no race session on the feed"),
-        s.test ? h("div", { style: "margin-top:6px" }, h("span", { class: "badge test" }, "icon test running")) : null)),
+        s.test ? h("div", { style: "margin-top:5px" }, h("span", { class: "badge testing" }, "icon test running")) : null)),
     h("div", { class: "chips" }, d.states.map((n) =>
       h("span", { class: "chip" + (n === s.state ? " active" : ""),
         style: n === s.state ? "background:" + STATE_COLORS[n] + ";--glow:" + STATE_COLORS[n] : "" }, n))),
@@ -362,7 +373,8 @@ function renderRaces(d) {
     setKids(box, h("div", { class: "empty" }, "No races on the schedule this week."),
       d.next_up.length ? h("div", { class: "small muted", style: "margin:8px 0 2px" }, "Next up") : null,
       d.next_up.map((r) => h("div", { class: "row" }, h("span", { class: "sr " + r.series }, r.series_name),
-        h("div", {}, h("div", { class: "title" }, r.name), h("div", { class: "sub" }, [r.track, r.when].filter(Boolean).join(" · "))), h("span"))));
+        h("div", {}, h("div", { class: "title" }, h("span", { class: "tt", title: r.name }, r.name)),
+          h("div", { class: "sub" }, [r.track, r.when].filter(Boolean).join(" · "))), h("span"))));
     return;
   }
   const labels = { live: "Live", started: "Started", upcoming: "Upcoming", past: "Earlier" };
@@ -374,7 +386,7 @@ function renderRaces(d) {
           h("button", { class: "btn", disabled: !r.can_mark, onclick: () => setDone(r.key, true) }, r.can_mark ? "Mark checked in" : "Not started"),
           r.status === "past" ? h("span", { class: "note-miss" }, "missed?") : null);
     return h("div", { class: "row" }, h("span", { class: "sr " + r.series }, r.series_name),
-      h("div", {}, h("div", { class: "title" }, r.name, h("span", { class: "st " + r.status }, labels[r.status])),
+      h("div", {}, h("div", { class: "title" }, h("span", { class: "tt", title: r.name }, r.name), h("span", { class: "st " + r.status }, labels[r.status])),
         h("div", { class: "sub" }, [r.track, r.when].filter(Boolean).join(" · "))), act);
   }));
 }
@@ -393,7 +405,7 @@ function renderDaily(d) {
           x.state === "today" ? "Mark done" : x.state === "past" ? "Missed" : "Not today"));
     const stText = x.state === "today" ? "Today" : x.state === "upcoming" ? "Coming up" : (x.done ? "Done" : "Missed");
     return h("div", { class: "row" }, h("span", { class: "sr", style: "background:#ff8a3d" }, x.label.slice(0, 3)),
-      h("div", {}, h("div", { class: "title" }, x.game, h("span", { class: "st " + (x.state === "today" ? "started" : "past") }, stText)),
+      h("div", {}, h("div", { class: "title" }, h("span", { class: "tt", title: x.game }, x.game), h("span", { class: "st " + (x.state === "today" ? "started" : "past") }, stText)),
         h("div", { class: "sub" }, x.label + " · resets next " + x.label)), act);
   }));
 }
