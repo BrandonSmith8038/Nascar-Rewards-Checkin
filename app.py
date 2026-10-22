@@ -1334,6 +1334,7 @@ def dashboard_payload(state, authed):
             "races": rows, "next_up": next_up, "daily": daily,
             "notifications": recent_notifications(5),
             "icons": icon_versions(),
+            "links": {"dashboard": DASHBOARD_URL},
             "auth": {"password_set": bool(DASHBOARD_PASSWORD), "logged_in": authed,
                      "can_edit": authed and not reason, "edit_note": reason,
                      "can_upload": authed and bool(DASHBOARD_PASSWORD)}}

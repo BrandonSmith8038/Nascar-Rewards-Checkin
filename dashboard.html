@@ -105,6 +105,13 @@
   .row .title { display: flex; align-items: baseline; min-width: 0; }
   .row .title .tt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .row .title .st { flex: none; }
+  /* A linked row: the title link stretches over the whole row, while the buttons on the right stay clickable above it. */
+  .row.linked { position: relative; }
+  .row .rowlink { color: inherit; text-decoration: none; }
+  .row .rowlink::after { content: ""; position: absolute; inset: 0; border-radius: 8px; }
+  .row .rowlink:focus-visible { outline: none; }
+  .row .rowlink:focus-visible::after { outline: 2px solid var(--accent); }
+  .row.linked .actions { position: relative; z-index: 1; }
   .sub { color: var(--muted); font-size: 13px; }
   .st { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; margin-left: 8px; }
   .st.live { color: #5fe07f; text-shadow: 0 0 10px rgba(63,185,80,.7); animation: pulse 1.6s infinite; }
@@ -404,8 +411,13 @@ function renderDaily(d) {
       : h("div", { class: "actions" }, h("button", { class: "btn", disabled: !x.can_mark, onclick: () => setDone(x.key, true) },
           x.state === "today" ? "Mark done" : x.state === "past" ? "Missed" : "Not today"));
     const stText = x.state === "today" ? "Today" : x.state === "upcoming" ? "Coming up" : (x.done ? "Done" : "Missed");
-    return h("div", { class: "row" }, h("span", { class: "sr", style: "background:#ff8a3d" }, x.label.slice(0, 3)),
-      h("div", {}, h("div", { class: "title" }, h("span", { class: "tt", title: x.game }, x.game), h("span", { class: "st " + (x.state === "today" ? "started" : "past") }, stText)),
+    // The page comes from DASHBOARD_URL via the server; only http(s) links are used.
+    const url = d.links && /^https?:\/\//i.test(d.links.dashboard || "") ? d.links.dashboard : "";
+    const name = url
+      ? h("a", { class: "tt rowlink", href: url, target: "_blank", rel: "noopener noreferrer", title: x.game + " (opens Fan Rewards in a new tab)" }, x.game)
+      : h("span", { class: "tt", title: x.game }, x.game);
+    return h("div", { class: "row" + (url ? " linked" : "") }, h("span", { class: "sr", style: "background:#ff8a3d" }, x.label.slice(0, 3)),
+      h("div", {}, h("div", { class: "title" }, name, h("span", { class: "st " + (x.state === "today" ? "started" : "past") }, stText)),
         h("div", { class: "sub" }, x.label + " · resets next " + x.label)), act);
   }));
 }
