@@ -1,0 +1,36 @@
+const { JSDOM } = require('jsdom'); const fs = require('fs'); const base = process.argv[2];
+(async () => {
+  const lr = await fetch(base + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'nc-dashboard' }, body: JSON.stringify({ password: 'pw' }) });
+  const cookie = lr.headers.get('set-cookie').split(';')[0];
+  const dom = new JSDOM(fs.readFileSync((process.env.REPO || '/home/claude/repo') + '/dashboard.html', 'utf8'), { runScripts: 'dangerously', pretendToBeVisual: true, url: base + '/',
+    beforeParse(w) { w.fetch = (u, o = {}) => fetch(new URL(u, base), { ...o, headers: { ...(o.headers || {}), Cookie: cookie } });
+      w.Element.prototype.scrollIntoView = () => {}; w.location.reload = () => { w.__reloaded = true; }; } });
+  const w = dom.window, d = w.document, $ = (s) => d.querySelector(s), $$ = (s) => [...d.querySelectorAll(s)];
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  let fails = 0; const check = (n, c, x) => { console.log((c ? 'ok   ' : 'FAIL ') + n, c ? '' : (x || '')); if (!c) fails++; };
+  await wait(1500);
+  check('logged in: no login overlay', $('#loginOverlay').hidden === true);
+  check('logout button visible', $('#logoutBtn').hidden === false);
+  check('no banner, editable', !$('#settingsBody .banner'));
+  check('first group open', $('#settingsBody details.group').open === true);
+  check('XSS: race name rendered as text, no <b> element', $('#racesBody b') === null && /<b>Future Cup<\/b>/.test($('#racesBody').textContent));
+  check('secret field holds value for editor', $$('#settingsBody input[type=password]').some((i) => i.value === 'abc' || i.value === 'pw'));
+  const field = (label) => $$('#settingsBody .field').find((f) => f.querySelector('.lbl').textContent.startsWith(label));
+  const set = (label, val) => { const i = field(label).querySelector('input,select'); i.value = val; i.dispatchEvent(new w.Event('input', { bubbles: true })); i.dispatchEvent(new w.Event('change', { bubbles: true })); };
+  check('Saturday game field exists (text)', !!field('Saturday game'));
+  set('Follow-ups', '99'); $('#saveBtn').click(); await wait(1200);
+  const errs = $$('#settingsBody .err').filter((e) => !e.hidden);
+  check('inline error for bad value', errs.length === 1 && /at most/.test(errs[0].textContent), errs.map((e) => e.textContent));
+  set('Follow-ups', '2'); set('Saturday game', 'Pick \'em'); set('Reminder time', '21:15');
+  const sat = field('Weekend preview').querySelector('input[type=checkbox]'); sat.checked = false; sat.dispatchEvent(new w.Event('change', { bubbles: true }));
+  $('#saveBtn').click(); await wait(1500);
+  check('restart overlay shown after save', $('#restartOverlay').hidden === false);
+  const env = fs.readFileSync(process.argv[3], 'utf8');
+  console.log('--- .env after save ---\n' + env + '-----------------------');
+  check('NUDGES written', /^NUDGES=2$/m.test(env));
+  check('GAME_SAT quoted + written', /^GAME_SAT="Pick 'em"$/m.test(env));
+  check('time written', /^DAILY_REMINDER_TIME=21:15$/m.test(env));
+  check('PREVIEW=0 written', /^PREVIEW=0$/m.test(env));
+  check('comment + password preserved', /# test env/.test(env) && /^DASHBOARD_PASSWORD=pw$/m.test(env));
+  console.log(fails ? '\nFAILURES: ' + fails : '\nALL OK'); process.exit(fails ? 1 : 0);
+})();

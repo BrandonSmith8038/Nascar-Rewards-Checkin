@@ -1296,6 +1296,11 @@ def build_daily_view(state, now):
         rows.append({"key": key, "day": d, "label": DAY_NAMES[i], "date": date.isoformat(), "game": game,
                      "state": "today" if date == today else ("upcoming" if date > today else "past"),
                      "done": key in done, "done_ts": done.get(key), "can_mark": date == today})
+    if missed_test_active(now.timestamp()):       # 'Preview a missed day' test: pretend the next future day was missed
+        for r in rows:
+            if r["state"] == "upcoming":
+                r["state"] = "past"
+                break
     return rows
 
 
@@ -1604,6 +1609,34 @@ def _t_schedule_probe(state):
     return ok, "\n".join(lines)
 
 
+def missed_test_path():
+    return os.path.join(DATA_DIR, "missed_test.json")
+
+
+def missed_test_active(now_ts):
+    """True while the 'Preview a missed day' test is running (it expires by itself)."""
+    try:
+        with open(missed_test_path()) as f:
+            return now_ts < float(json.load(f)["until"])
+    except Exception:
+        return False
+
+
+def _t_missed_day(state):
+    secs = 30
+    rows = build_daily_view(state, datetime.now(timezone.utc))
+    target = next((r for r in rows if r["state"] == "upcoming"), None)
+    if target is None:
+        return False, ("No upcoming game day to simulate this week. Set a game on a later day "
+                       "(for example GAME_FRI) under Settings -> Daily dashboard reminder, then run this again.")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(missed_test_path(), "w") as f:
+        json.dump({"until": time.time() + secs}, f)
+    return True, (f"Started. For the next {secs} s the {target['label']} game ({target['game']}) shows as Missed "
+                  "in Daily dashboard games. The button should be red and not clickable. "
+                  "Nothing is sent to your phone and nothing real is changed.")
+
+
 TESTS = [
     {"id": "notification", "name": "Send a test notification", "sends": True, "fn": _t_notification,
      "desc": "Sends a real notification with the same buttons as an alert. Confirms your phone, the ntfy topic and the buttons."},
@@ -1617,6 +1650,8 @@ TESTS = [
      "desc": "Sends today's dashboard-games reminder to your phone, with its buttons."},
     {"id": "icon_test", "name": "Run the key icon test", "sends": False, "fn": _t_icon_test,
      "desc": "Cycles the Stream Deck status through green, yellow, red, hot and offline. Watch the key card here and your real key."},
+    {"id": "missed_day_test", "name": "Preview a missed day", "sends": False, "fn": _t_missed_day,
+     "desc": "For 30 seconds, shows the next 'Not today' daily game as Missed (red, not clickable) so you can see the look without missing a day. Nothing is sent or saved."},
     {"id": "polling", "name": "Check polling status", "sends": False, "fn": _t_polling,
      "desc": "Shows whether the app may contact nascar.com right now (quiet days and hours), and why."},
     {"id": "races", "name": "List upcoming races", "sends": False, "fn": _t_races,

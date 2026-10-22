@@ -123,6 +123,9 @@
   .btn:hover:not(:disabled) { filter: brightness(1.12); }
   .btn:disabled { background: var(--card2); border-color: var(--line); color: var(--muted); cursor: default; box-shadow: none; }
   .btn.done:disabled { color: #6ee08a; border-color: #2a7a40; background: #10281a; }
+  .btn.missed:disabled { color: #ff8f8a; border-color: #7a2a2a; background: #2a1213; opacity: 1; box-shadow: none; }
+  .btn.todo:not(:disabled) { color: #8cf0a5; border-color: #2f8f4a; background: #143822; box-shadow: none; }
+  .btn.todo:hover:not(:disabled) { background: #1a4a2c; filter: none; }
   .btn.secondary { background: var(--card2); border-color: #3a4452; color: var(--text); box-shadow: none; }
   .btn.mini-btn { padding: 4px 10px; font-size: 12px; }
   .note-miss { color: var(--grey); font-size: 12px; }
@@ -408,7 +411,7 @@ function renderDaily(d) {
     const act = x.done
       ? h("div", { class: "actions" }, h("button", { class: "btn done", disabled: true }, "✓ Done"),
           x.can_mark ? h("button", { class: "linkbtn small", onclick: () => setDone(x.key, false) }, "undo") : null)
-      : h("div", { class: "actions" }, h("button", { class: "btn", disabled: !x.can_mark, onclick: () => setDone(x.key, true) },
+            : h("div", { class: "actions" }, h("button", { class: "btn" + (x.state === "past" ? " missed" : x.state === "today" ? " todo" : ""), disabled: !x.can_mark, onclick: () => setDone(x.key, true) },
           x.state === "today" ? "Mark done" : x.state === "past" ? "Missed" : "Not today"));
     const stText = x.state === "today" ? "Today" : x.state === "upcoming" ? "Coming up" : (x.done ? "Done" : "Missed");
     // The page comes from DASHBOARD_URL via the server; only http(s) links are used.
@@ -582,10 +585,10 @@ async function runTest(id) {
   const r = await api("/api/tests/run", { method: "POST", body: { id } });
   if (r.ok) testState[id] = { ok: r.data.ok, output: r.data.output, at: Date.now() };
   else testState[id] = { ok: false, output: r.data.error || "The test couldn't run.", at: Date.now() };
-  buildTests(); if (id === "icon_test") setTimeout(refresh, 800);
+  buildTests(); if (id === "icon_test" || id === "missed_day_test") setTimeout(refresh, 800);
 }
 async function runAllReadOnly() {
-  for (const x of testsInfo.tests.filter((t) => !t.sends && t.id !== "icon_test")) await runTest(x.id);
+  for (const x of testsInfo.tests.filter((t) => !t.sends && t.id !== "icon_test" && t.id !== "missed_day_test")) await runTest(x.id);
 }
 
 /* ---------- refresh loop ---------- */
