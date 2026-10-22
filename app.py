@@ -140,6 +140,8 @@ SETTINGS = [
     _s("DAILY_REMINDER", "Daily reminder", "Daily dashboard reminder", "bool", 1,
        "One notification a day to earn dashboard game points."),
     _s("DAILY_REMINDER_TIME", "Reminder time", "Daily dashboard reminder", "time", "22:00", "Your local time (24-hour)."),
+    _s("DAILY_UNLOCK_TIME", "Games unlock at", "Daily dashboard reminder", "time", "08:00",
+       "Your local time (24-hour). Until then the day's game shows 'Not today' on the dashboard."),
     _s("DAILY_ONLY_CONFIGURED", "Only on days with a game", "Daily dashboard reminder", "bool", 0,
        "Skip the reminder on days that have no game named below."),
     _s("DASHBOARD_URL", "Dashboard link", "Daily dashboard reminder", "text", "",
@@ -351,6 +353,10 @@ try:
     DAILY_TIME = tuple(int(x) for x in os.environ.get("DAILY_REMINDER_TIME", "22:00").split(":"))[:2]
 except ValueError:
     DAILY_TIME = (22, 0)
+try:
+    DAILY_UNLOCK = tuple(int(x) for x in os.environ.get("DAILY_UNLOCK_TIME", "08:00").split(":"))[:2]
+except ValueError:
+    DAILY_UNLOCK = (8, 0)
 DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "").strip() or CHECKIN_URL
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "").strip()
 DAILY_GAMES = {d: os.environ.get(f"GAME_{d.upper()}", "").strip() for d in _DAYS}
@@ -1293,9 +1299,13 @@ def build_daily_view(state, now):
             continue
         date = (monday + timedelta(days=i)).date()
         key = f"daily:{date.isoformat()}"
+        if date == today:
+            # today's game opens at DAILY_UNLOCK_TIME (local); before that it still reads "Not today"
+            st = "today" if (local.hour, local.minute) >= DAILY_UNLOCK else "upcoming"
+        else:
+            st = "upcoming" if date > today else "past"
         rows.append({"key": key, "day": d, "label": DAY_NAMES[i], "date": date.isoformat(), "game": game,
-                     "state": "today" if date == today else ("upcoming" if date > today else "past"),
-                     "done": key in done, "done_ts": done.get(key), "can_mark": date == today})
+                     "state": st, "done": key in done, "done_ts": done.get(key), "can_mark": st == "today"})
     if missed_test_active(now.timestamp()):       # 'Preview a missed day' test: pretend the next future day was missed
         for r in rows:
             if r["state"] == "upcoming":
