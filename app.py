@@ -1155,6 +1155,14 @@ def maybe_send_daily(state, now):
     with STATE_LOCK:
         if state.get("daily_date") == today:
             return
+        already_done = f"daily:{today}" in state["done"]
+    if already_done:
+        # You already earned today's points, so there's nothing to remind you about.
+        with STATE_LOCK:
+            state["daily_date"] = today
+            save_state(state)
+        log.info("Daily reminder skipped (today's game already marked done)")
+        return
     built = build_daily(local.weekday())
     if built is not None:
         title, body = built
