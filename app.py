@@ -168,8 +168,8 @@ SETTINGS = [
        "Address your phone can reach this server at, e.g. http://100.x.y.z:8099 (Tailscale)."),
 
     _s("DASHBOARD_PASSWORD", "Dashboard password", "Dashboard", "secret", "",
-       "Required to edit settings. Blank = the dashboard is view-only. Sent over plain HTTP, so keep it on your "
-       "home network or Tailscale."),
+       "Optional. Blank = no login; anyone on your network can edit settings. Sent over plain HTTP, so keep it on "
+       "your home network or Tailscale."),
 
     _s("NTFY_URL", "ntfy server", "Advanced", "text", "https://ntfy.sh", ""),
     _s("NTFY_TOKEN", "ntfy access token", "Advanced", "secret", "", "Only for a protected ntfy topic."),
@@ -1334,9 +1334,6 @@ def build_summary(races_rows, daily_rows):
 
 
 def edit_block_reason():
-    if not DASHBOARD_PASSWORD:
-        return ("Editing is off. Add DASHBOARD_PASSWORD=<something> to your .env once (by hand), "
-                "recreate the container, and this section unlocks.")
     if not CONFIG_LOADED:
         return ("The .env file isn't visible to the app. Add the volume '- ./.env:/config/.env' to "
                 "docker-compose.yml and recreate the container.")
@@ -1360,7 +1357,7 @@ def dashboard_payload(state, authed):
             "links": {"dashboard": DASHBOARD_URL},
             "auth": {"password_set": bool(DASHBOARD_PASSWORD), "logged_in": authed,
                      "can_edit": authed and not reason, "edit_note": reason,
-                     "can_upload": authed and bool(DASHBOARD_PASSWORD)}}
+                     "can_upload": authed}}
 
 
 def current_file_values():
@@ -1726,6 +1723,8 @@ class Handler(BaseHTTPRequestHandler):
         return ""
 
     def _authed(self):
+        if not DASHBOARD_PASSWORD:
+            return True            # no password set: everyone on the LAN is trusted
         tok = self._token()
         exp = SESSIONS.get(tok)
         if exp and exp > time.time():
@@ -1857,7 +1856,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/tests" and method == "GET":
             return self._json(200, {"tests": [{"id": t["id"], "name": t["name"], "desc": t["desc"],
                                                "sends": t["sends"], "network": bool(t.get("network"))} for t in TESTS],
-                                    "can_send": bool(DASHBOARD_PASSWORD and self._authed()),
+                                    "can_send": self._authed(),
                                     "password_set": bool(DASHBOARD_PASSWORD)})
         if path == "/api/tests/run" and method == "POST":
             return self._run_test(self._body())
@@ -1871,9 +1870,9 @@ class Handler(BaseHTTPRequestHandler):
         t = TESTS_BY_ID.get(tid)
         if t is None:
             return self._json(404, {"ok": False, "error": "Unknown test."})
-        if t["sends"] and not (DASHBOARD_PASSWORD and self._authed()):
+        if t["sends"] and not self._authed():
             return self._json(403, {"ok": False, "error": "Log in with the dashboard password to run tests that send "
-                                                           "notifications (set DASHBOARD_PASSWORD in .env if you haven't)."})
+                                                           "notifications."})
         now = time.time()
         if now - TEST_LAST_RUN.get(tid, 0) < 2:
             return self._json(429, {"ok": False, "error": "Easy: that test just ran."})
@@ -1886,8 +1885,8 @@ class Handler(BaseHTTPRequestHandler):
             raise PermissionError("missing header")
         if state not in TEST_STATES:
             return self._json(404, {"ok": False, "error": "Unknown state."})
-        if not (DASHBOARD_PASSWORD and self._authed()):
-            return self._json(403, {"ok": False, "error": "Set a dashboard password and log in to change icons."})
+        if not self._authed():
+            return self._json(403, {"ok": False, "error": "Log in to change icons."})
         n = int(self.headers.get("Content-Length") or 0)
         if n > MAX_ICON_BYTES:
             self.rfile.read(min(n, 1 << 20))

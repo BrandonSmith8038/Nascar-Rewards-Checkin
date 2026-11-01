@@ -31,10 +31,13 @@ check("banner size sane (<400 KB)", len(b)<400*1024, len(b))
 # icons: public GET 404 until uploaded
 c,b,_=call("GET","/icons/green",raw=True); check("no custom icon -> 404", c==404)
 c,b,_=call("GET","/icons/evil",raw=True); check("unknown state -> 404", c==404)
-# upload needs password+login
-c,b,_=call("POST","/api/icon/green",png("red"),headers={"Content-Type":"image/png"}); check("upload without password set rejected", c==403, b)
-# set a password via the config and reload module state
+# no password set: no login wall, and upload / send-tests are open
+c,d,_=call("GET","/api/dashboard"); check("no password: dashboard open, no login", c==200 and d["auth"]["password_set"] is False and d["auth"]["can_upload"] is True, d.get("auth"))
+c,t,_=call("GET","/api/tests"); check("no password: send-tests allowed", c==200 and t["can_send"] is True, t)
+c,b,_=call("POST","/api/icon/green",png("red"),headers={"Content-Type":"image/png"}); check("no password: upload allowed", c==200, b)
+# set a password via the config and reload module state; now it needs login again
 app.DASHBOARD_PASSWORD="pw"
+c,b,_=call("POST","/api/icon/green",png("red"),headers={"Content-Type":"image/png"}); check("password set: upload without login rejected", c==401, b)
 c,b,h=call("POST","/api/login",{"password":"pw"}); cookie=h["Set-Cookie"].split(";")[0]; check("login", c==200)
 c,b,_=call("POST","/api/icon/green",png("red"),cookie=cookie,headers={"Content-Type":"image/png"}); check("upload png ok", c==200, b)
 c,img,h=call("GET","/icons/green",raw=True); check("custom icon served", c==200 and h["Content-Type"]=="image/png" and img[:4]==b"\x89PNG")

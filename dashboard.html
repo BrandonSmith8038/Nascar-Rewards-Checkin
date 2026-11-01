@@ -353,7 +353,7 @@ function renderIconManager(d) {
   });
   const note = can
     ? "These change the preview on this page only. Your actual Stream Deck keeps using the images you picked in the plugin, so upload the same files here if you want this page to match."
-    : (d.auth.password_set ? "Log in to change the preview icons." : "Add DASHBOARD_PASSWORD to your .env (and recreate the container) to change the preview icons.");
+    : "Log in to change the preview icons.";
   setKids($("iconMgr"), h("details", { class: "icons", open: iconsOpen, ontoggle: (e) => { iconsOpen = e.target.open; } },
     h("summary", {}, "Change preview icons"), h("div", { class: "small muted", style: "margin:2px 0 10px" }, note), h("div", { class: "igrid" }, cells)));
 }
@@ -562,8 +562,7 @@ function buildTests() {
   const t = testsInfo, canSend = !!t.can_send;
   const runAllBtn = h("button", { class: "btn secondary", id: "runAllBtn", onclick: runAllReadOnly }, "Run all read-only checks");
   const note = canSend ? "Orange tests put a real notification on your phone." :
-    (t.password_set ? "Log in to run the orange tests (they send real notifications)."
-                    : "Add DASHBOARD_PASSWORD to your .env to run the orange tests (they send real notifications).");
+    "Log in to run the orange tests (they send real notifications).";
   const tiles = t.tests.map((x) => {
     const st = testState[x.id] || {};
     const btn = h("button", { class: x.sends ? "btn" : "btn secondary", id: "run_" + x.id, disabled: st.running || (x.sends && !canSend),
