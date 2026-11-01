@@ -27,4 +27,4 @@ Expected: ten `PASS` lines. Output of each suite is in `/tmp/dt/out_*.txt` (read
 - jsdom does not do layout. These tests prove structure and behaviour, not how the page looks.
 - No Docker, no Unraid, no real Stream Deck software, no real phone were involved.
 - The NASCAR feeds are not reachable from the sandbox these were built in, so feed parsing is tested with
-  fabricated payloads shaped like the real ones the owner pasted once (see HANDOFF.md).
+  fabricated payloads shaped like the real ones the owner pasted once (see CLAUDE.md).

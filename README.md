@@ -21,13 +21,12 @@ that still say `xfinity` keep working and are treated as O'Reilly.
 | `app.py`, `dashboard.html`, `Dockerfile`, `docker-compose.yml` | the service (Python, standard library only) and its dashboard page |
 | `icon.png`, `banner.jpg` | container icon (also served at `/icon.png`) and the dashboard banner; replace either file to change it |
 | `.env.example` | template for every setting; copy it to `.env` |
-| `update.sh` | `git pull`, rebuild and restart |
 | `pc-listener.ps1` | optional Windows script that opens the leaderboard when an alert arrives (untested) |
 | `races.example.json` | example manual schedule override |
 | `streamdeck/` | key images `state_green.png`, `state_yellow.png`, `state_red.png`, `state_hot.png`, `state_offline.png` |
 | `streamdeck-plugin/` | source of the "API Request Multi" Stream Deck plugin (Apache-2.0, derived from mjbnz/sd-api-request; see its `NOTICE`) |
 | `dev-tests/` | test harness (Python + jsdom); see its own README |
-| `handoff.md` | developer notes for continuing work on the project |
+| `CLAUDE.md` | developer notes for continuing work on the project (read by Claude Code) |
 
 **Settings stay out of git.** Every personal setting (ntfy topic, time zone, IPs, tokens) lives in `.env` next to
 `docker-compose.yml`. `.env` is git-ignored and exists only on your server. `docker-compose.yml` has no personal values.
@@ -43,8 +42,8 @@ cp .env.example .env
 nano .env              # fill in your values; this file never leaves the server
 docker compose up -d --build
 ```
-Every update after that: push from your computer, then on the server run `./update.sh`
-(`git pull --ff-only`, rebuild, restart; your `.env` and the data folder are untouched). Then **hard refresh** the dashboard
+Every update after that: push from your computer, then on the server run `git pull --ff-only` and
+`docker compose up -d --build` (your `.env` and the data folder are untouched). Then **hard refresh** the dashboard
 (Ctrl+F5), because `dashboard.html` is baked into the image.
 
 - Keep the clone (`nascar-checkin-src`) and the data folder (`/mnt/user/appdata/nascar-checkin`) as separate folders.
