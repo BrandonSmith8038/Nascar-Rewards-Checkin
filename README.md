@@ -103,7 +103,7 @@ Dark theme, refreshes every 5 seconds.
 - **Stream Deck key:** the state the key is showing (green / yellow / red / hot / offline) and the facts behind it: flag number,
   which series are live, whether the app is polling NASCAR, whether the live feed is healthy, alert mode and the time zone the app
   is actually using. *Change preview icons* lets you upload your own picture per state (PNG, JPEG, GIF or WebP, up to 512 KB;
-  needs the dashboard password). This changes the dashboard preview only; your real key shows the images you chose in the plugin.
+  needs the dashboard password if you've set one). This changes the dashboard preview only; your real key shows the images you chose in the plugin.
 - **This week's races** (Monday to Sunday in your time zone): a **Mark checked in** button per race that unlocks when the race
   starts. Once ticked it stays ticked (undo link if you misclick). On a week with no races it shows the next ones.
 - **Daily dashboard games:** the days you named in settings (`GAME_MON` ... `GAME_SUN`).
@@ -116,12 +116,13 @@ Dark theme, refreshes every 5 seconds.
 - **Tests:** every check the app has, each with a Run button and its output underneath: send a test notification, show or send the
   weekend preview, show or send the daily reminders, the key icon test, **Preview a missed day** (shows the next "Not today" game as
   Missed for 30 seconds, changes nothing), polling status, upcoming races, and the live-feed and schedule-feed checks (those two
-  contact NASCAR). Orange tests send a real notification and need the dashboard password. *Run all read-only checks* runs the rest.
+  contact NASCAR). Orange tests send a real notification (and need the dashboard password if you've set one). *Run all read-only checks* runs the rest.
 - **Settings:** every `.env` setting in a form, grouped, with validation and the default shown. Comments and layout in `.env` are
   kept and the previous version is saved to `/data/env.backup`.
 
-**Password.** Set `DASHBOARD_PASSWORD` in `.env` by hand once and recreate the container. Without it the dashboard is view-only
-(settings read-only; icon upload and the notification-sending tests are locked). With it, the whole dashboard asks you to log in
+**Password (optional).** By default there is no login: anyone who can reach the dashboard on your network can edit settings, upload
+icons and run the notification-sending tests, so keep the port on your home network or Tailscale. To require a password, set
+`DASHBOARD_PASSWORD` in `.env` by hand and recreate the container. Then the whole dashboard asks you to log in
 (session lasts 12 hours; 5 wrong tries locks that address out for 5 minutes). The password travels over plain HTTP, so this protects
 against other devices on your network, not against someone watching the wire. `/status` stays open for the Stream Deck.
 
@@ -245,7 +246,7 @@ line, never after a value. The `$` character and line breaks are not allowed in 
 | `CHECKIN_URL` | https://www.nascar.com/leaderboard | page the "Open website" button opens |
 | `APP_URL` / `APP_INTENT` / `APP_LABEL` / `WEB_LABEL` | blank / blank / Open NASCAR app / Open website | optional app button and button names |
 | `ACK_TOKEN` / `ACK_BASE_URL` | off | "Checked in" / "Points earned" buttons (the address must be reachable from your phone) |
-| `DASHBOARD_PASSWORD` | blank | enables login and editing on the dashboard |
+| `DASHBOARD_PASSWORD` | blank | optional; blank = no login, set it to require a password on the dashboard |
 | `NTFY_URL` / `NTFY_TOKEN` | https://ntfy.sh / blank | ntfy server and optional access token |
 | `LIVE_POLL_SEC` | 60 | how often the live feed is checked when polling is allowed |
 | `END_GRACE_MIN` | 5 | minutes not live before a race counts as over |
